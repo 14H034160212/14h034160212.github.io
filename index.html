@@ -206,11 +206,11 @@
 	<!--Artificial Intelligence, Deep Learning, Natural Language Processing, Question Answering, Machine Reasoning, Knowledge Graph-->
 	<br />
 	<br />
-	<button onclick="showPage(5)">Current/Previous Teaching</button>
-    <button onclick="showPage(6)">Invited Speaker</button>
-    <button onclick="showPage(7)">Conference/Journal Reviewer</button>
-	<button onclick="showPage(8)">Honours</button>
-	<button onclick="showPage(9)">Patents & Software Copyright</button>
+	<button onclick="showPageCopy(5)">Current/Previous Teaching</button>
+    <button onclick="showPageCopy(6)">Invited Speaker</button>
+    <button onclick="showPageCopy(7)">Conference/Journal Reviewer</button>
+	<button onclick="showPageCopy(8)">Honours</button>
+	<button onclick="showPageCopy(9)">Patents & Software Copyright</button>
 
     <div id="pagecopy5" class="pagecopy" style="display:block;">
       <br />
@@ -300,7 +300,7 @@
 	
 	Last update: 24 March 2023
 	<script>
-      function showPage(pageNum) {
+      function showPageCopy(pageNum) {
         // 隐藏所有页面
         var pages = document.getElementsByClassName("pagecopy");
         for (var i = 0; i < pages.length; i++) {
