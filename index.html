@@ -23,6 +23,21 @@
             a{
                 text-decoration:none;
             }
+		
+	    /* 样式表，用于控制分页的外观 */
+	    .page {
+		display: none;
+		border: 1px solid black;
+		padding: 10px;
+		margin-bottom: 20px;
+	    }
+		
+		.pagecopy {
+		display: none;
+		border: 1px solid black;
+		padding: 10px;
+		margin-bottom: 20px;
+	    }
 	     
         </style>
 
@@ -62,15 +77,24 @@
     <br />
 	
 	
-	<span class="style1">News</span>	
-    <br />
+	<span class="style1">News</span>
+	<br />
+    <button onclick="showPage(1)">2023</button>
+    <button onclick="showPage(2)">2022</button>
+    <button onclick="showPage(3)">2021</button>
+	<button onclick="showPage(4)">2020</button>
+
+    <div id="page1" class="page" style="display:block;">
+      <br />
 	[23 January 2023] Our paper (Neset Ozkan TAN, Trung Nguyen, Josh Bensemann, Alex Peng, Qiming Bao, Yang Chen, Mark Gahegan and Michael Witcbrock)<br /> 
         "Multi2Claim: Generating Scientific Claims from Multi-Choice Questions for Scientific Fact-Checking" has been accepted by <A href="https://2023.eacl.org/"><FONT face="Bitstream Vera Sans">EACL 2023</FONT></A>. <br />
     <br />
 	[18 January 2023] We tested and listed the cases that GPT-3 and ChatGPT failed, including multi-step reasoning, logical equivalence, and logical reasoning to the spreadsheet created by Gary Marcus and Ernest Davis at NYU.<br /> 
         [<A href="https://twitter.com/qiming_bao/status/1615311194931490818"><FONT face="Bitstream Vera Sans">Tweets Link for Multi-Step Reasoning and Logical Equivalence</FONT></A>] [<A href="https://twitter.com/qiming_bao/status/1625688954514333698"><FONT face="Bitstream Vera Sans">Tweets Link for Logical Reasoning Reading Comprehension</FONT></A>] [<A href="https://docs.google.com/spreadsheets/d/1kDSERnROv5FgHbVN8z_bXH9gak2IXRtoqz0nwhrviCw/edit#gid=1302320625"><FONT face="Bitstream Vera Sans">Spreadsheet Link</FONT></A>] [<A href="https://researchrabbit.typeform.com/llmerrors?typeform-source=www.linkedin.com"><FONT face="Bitstream Vera Sans">Submit your cases</FONT></A>]. <br />
     <br />
-	[11 December 2022] Our paper (Neset Tan, Alex Peng, Joshua Bensemann, Qiming Bao, Tim Hartill, Mark Gahegan, and Michael Witbrock)<br /> 
+    </div>
+    <div id="page2" class="page">
+      [11 December 2022] Our paper (Neset Tan, Alex Peng, Joshua Bensemann, Qiming Bao, Tim Hartill, Mark Gahegan, and Michael Witbrock)<br /> 
         "Input-length-shortening and text generation via attention values" has been accepted by <A href="https://www.emc2-ai.org/aaai-23"><FONT face="Bitstream Vera Sans">AAAI-EMC^2 2023</FONT></A>. [<A href="https://arxiv.org/abs/2303.07585"><FONT face="Bitstream Vera Sans">Paper link</FONT></A>]<br />
     <br />
 	[07 December 2022] ReClor: A Logical Reasoning Reading Comprehension Leaderboard <br />
@@ -91,7 +115,9 @@
 	[09 January 2022] One of the contributers to an open source tool for simplifying bibtex called "SimBiber" [<A href="https://github.com/MLNLP-World/SimBiber"><FONT face="Bitstream Vera Sans">GitHub Link</FONT></A>].
 	<br />
     <br />
-	[13 November 2021] Our paper (Lin Ni, Qiming Bao, Xiaoxuan Li, Qianqian Qi, Paul Denny, Jim Warren, Michael Witbrock and Jiamou Liu) <br />
+    </div>
+    <div id="page3" class="page">
+      [13 November 2021] Our paper (Lin Ni, Qiming Bao, Xiaoxuan Li, Qianqian Qi, Paul Denny, Jim Warren, Michael Witbrock and Jiamou Liu) <br />
 	"DeepQR: Neural-based Quality Ratings for Learnersourced Multiple-Choice Questions" has been accepted for publication in the Long Paper of <A href="https://aaai.org/Conferences/AAAI-22/eaai-22-call/"><FONT face="Bitstream Vera Sans">Twelfth AAAI Symposium on Educational Advances in Artificial Intelligence (AAAI/EAAI-22)</FONT></A> [<A href="https://ojs.aaai.org/index.php/AAAI/article/view/21562"><FONT face="Bitstream Vera Sans">Paper link</FONT></A>].
 	<br />
     <br />
@@ -121,15 +147,28 @@
 	"From Symbolic Logic Reasoning to Soft Reasoning: A Neural-Symbolic Paradigm" has been accepted at <A href="https://www.ainz.ai/"><FONT face="Bitstream Vera Sans">New Zealand Workshop on Artificial Intelligence Research (NZAIR 2021)</FONT></A> [<A href="https://www.researchgate.net/publication/356695884_From_Symbolic_Logic_Reasoning_to_Soft_Reasoning_A_Neural-Symbolic_Paradigm"><FONT face="Bitstream Vera Sans">Poster link</FONT></A>] [<A href="https://github.com/Strong-AI-Lab/A-Neural-Symbolic-Paradigm"><FONT face="Bitstream Vera Sans">Source code</FONT></A>].
 	<br />
     <br />
-	[04 February 2020] Our paper (Qiming Bao, Lin Ni, Jiamou Liu) <br />
+    </div>
+	<div id="page4" class="page">
+      [04 February 2020] Our paper (Qiming Bao, Lin Ni, Jiamou Liu) <br />
 	"HHH: An Online Medical Chatbot System based on Knowledge Graph and Hierarchical Bi-Directional Attention" has been accepted for publication in the Long Paper of <A href="http://www.acsw.org.au/"><FONT face="Bitstream Vera Sans">Australasian Computer Science Week (ACSW-20)</FONT></A> [<A href="https://arxiv.org/abs/2002.03140"><FONT face="Bitstream Vera Sans">Paper link</FONT></A>] [<A href="https://github.com/14H034160212/HHH-An-Online-Question-Answering-System-for-Medical-Questions"><FONT face="Bitstream Vera Sans">Source code</FONT></A>] [<A href="https://www.youtube.com/redirect?event=comments&redir_token=QUFFLUhqbWtqVHRmbzdQYVJFSW9odl9qZF9CWTdxUXdvQXxBQ3Jtc0ttQjRBdktkOFQ1enpvUGk1X0ZLT0hIb3g5WnhZWjVyVjFiVUQ1STdTeW9pMXdpYlJWSk9xeVA0Y01Qbm85bkQtRWxjdlk5TWdfY2I0OFNIazBhRkFoNEN6YmdjYTFaVnh3Ynkyel9LQjNhbkZ4WGxwQQ&q=https%3A%2F%2Fdocs.google.com%2Fpresentation%2Fd%2F15BfDM07IdUJiqONTAXAhIk3Y8a6oWn_2%2Fedit%3Fusp%3Dsharing%26ouid%3D116744487318855501460%26rtpof%3Dtrue%26sd%3Dtrue&stzid=UgxhkQ3dcho0vzjqWIV4AaABAg"><FONT face="Bitstream Vera Sans">Presentation slide</FONT></A>] [<A href="https://youtu.be/zTK3zZtxHs4"><FONT face="Bitstream Vera Sans">Recording</FONT></A>].
 	<br />
-	
-	Last update: 21 March 2023
-		
-	
-		<br />
-    <br />
+    </div>
+	Last update: 24 March 2023
+    <script>
+      function showPage(pageNum) {
+        // 隐藏所有页面
+        var pages = document.getElementsByClassName("page");
+        for (var i = 0; i < pages.length; i++) {
+          pages[i].style.display = "none";
+        }
+
+        // 显示选定的页面
+        var page = document.getElementById("page" + pageNum);
+        if (page) {
+          page.style.display = "block";
+        }
+      }
+    </script>
 	
 	
 </div>
@@ -167,8 +206,14 @@
 	<!--Artificial Intelligence, Deep Learning, Natural Language Processing, Question Answering, Machine Reasoning, Knowledge Graph-->
 	<br />
 	<br />
-	<span class="style1">Current/Previous Teaching</span>	
-	<br />
+	<button onclick="showPage(5)">Current/Previous Teaching</button>
+    <button onclick="showPage(6)">Invited Speaker</button>
+    <button onclick="showPage(7)">Conference/Journal Reviewer</button>
+	<button onclick="showPage(8)">Honours</button>
+	<button onclick="showPage(9)">Patents & Software Copyright</button>
+
+    <div id="pagecopy5" class="pagecopy" style="display:block;">
+      <br />
 	<p>The University of Auckland <br/>
 	--PhD Mentor (Outstanding PhD Mentor)<br/>
         --Graduate Teaching Assistant & Teaching Assistant <br/>
@@ -183,8 +228,9 @@
         --Lab Demonstrator</p> 
 	<p>Monash University & Southeast University Joint Graduate School (Monash-SEU JGS) <br/>
 	--Android Mobile Application Development (Teaching Assistant for Master's Programs)</p> 
-        <span class="style1">Invited Speaker</span>	
-	<br />
+    </div>
+    <div id="pagecopy6" class="pagecopy">
+      <br />
 	Microsoft Research Asia Invited Talk 2022 (<A href="./The University of Auckland Mail - Invited Talk_ Natural Language Processing and Reasoning (Study Group on Reasoning, Knowledge, and Causality).pdf"><FONT face="Bitstream Vera Sans">Invitation Letter</FONT></A>) <A href="./Invited Talk Natural Language Processing and Reasoning [Study Group on Reasoning, Knowledge, and Causality].pdf"><FONT face="Bitstream Vera Sans">(Presentation slide)</FONT></A> (<A href="https://youtu.be/nfNbSZPY4EU"><FONT face="Bitstream Vera Sans">Recording</FONT></A>)
 	<br />
 	Samsung AI Center Cambridge UK Invited Talk 2022 (<A href="./Samsung_AI_Center_Cambridge_UK_Guest_Talk_Invitation_Letter.pdf"><FONT face="Bitstream Vera Sans">Invitation Letter</FONT></A>) <A href="./Multi_Step_Deductive_Reasoning_Over_Natural_Language_An_Empirical_Study_on_Out_of_Distribution_Generalisation_Updated_Version_Samsung.pdf"><FONT face="Bitstream Vera Sans">(Presentation Slide)</FONT></A> (<A href="https://youtu.be/0ZkayBD3WVY"><FONT face="Bitstream Vera Sans">Recording</FONT></A>)
@@ -192,7 +238,9 @@
 	IEEE Vehicular Technology Society (VTS) New Zealand North Chapter and IEEE New Zealand North Section SIGHT Group 2022 (<A href="./IEEE_VTS_invited_talk.jpg"><FONT face="Bitstream Vera Sans">Invitation Letter</FONT></A>) (<A href="./Qiming_Bao_IEEE_VTS_Natural_Language_Processing_Reasoning_Invited_Talk_Final.pdf"><FONT face="Bitstream Vera Sans">Presentation Slide</FONT></A>) (<A href="https://youtu.be/ZzCpq5gXQto"><FONT face="Bitstream Vera Sans">Recording</FONT></A>)
 	<br />
 	<br />
-	<span class="style1">Conference Reviewer</span>	
+    </div>
+    <div id="pagecopy7" class="pagecopy">
+      <span class="style1">Conference Reviewer</span>	
     <br />
 	ACL Rolling Reviewer 2023 (Core Rank:A*, CCF Rank A)
 	<br />
@@ -205,14 +253,14 @@
 	<!--Multimedia Tools and Applications (SCI, IF:2.757, H index 80, CCF Rank C)-->
 	<br />
 	<br />
-        <span class="style1">Magazine Guest Editor</span>	
+	<span class="style1">Magazine Guest Editor</span>	
     <br />
         <A href="http://craccum.co.nz/">CRACCUM</A>, The University of Auckland Student Magazine (<A href="http://craccum.co.nz/features/is-chatgpt-all-talk-and-no-action/"><FONT face="Bitstream Vera Sans">My Article</FONT></A>)
 	<br />
 	<br />
-
-	<span class="style1">Honours</span>	
-    <br />
+    </div>
+	<div id="pagecopy8" class="pagecopy">
+      <br />
 	[2022] <A href="./phd_mentor_certificate.jpg"><FONT face="Bitstream Vera Sans">Outstanding PhD Mentor</FONT></A>, School of Computer Science, University of Auckland
 	<br />
 	[2022] <A href="https://www.credly.com/badges/9ec4208e-01c4-4de9-92d7-2e63d3f91bd9/linked_in_profile"><FONT face="Bitstream Vera Sans">Neuro-Symbolic AI Essentials</FONT></A>, IBM
@@ -235,9 +283,9 @@
 	<br />
 	<br />
 
-
-	<span class="style1">Patents & Software Copyright</span>	
-    <br />
+    </div>
+	<div id="pagecopy9" class="pagecopy">
+      <br />
 	[2017] A Mobile Medical Platform for College Students Based on APP (Patent) ID: cn 2017101901386
 	<br />
 	[2017] Yunguo New Agriculture Network Exchange Platform (Software Copyright) ID: cn 2017SR043325
@@ -247,8 +295,25 @@
 	[2017] Books Purchase and Management Software of Qiming Star Bookstore (Software Copyright) ID: cn 2017SR531508
 	<br />
 	<br />
+
+    </div>
 	
-	Last update: 21 March 2023
+	Last update: 24 March 2023
+	<script>
+      function showPage(pageNum) {
+        // 隐藏所有页面
+        var pages = document.getElementsByClassName("pagecopy");
+        for (var i = 0; i < pages.length; i++) {
+          pages[i].style.display = "none";
+        }
+
+        // 显示选定的页面
+        var page = document.getElementById("pagecopy" + pageNum);
+        if (page) {
+          page.style.display = "block";
+        }
+      }
+    </script>
 		
 	<br />
 	<br />
