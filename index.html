@@ -55,11 +55,22 @@
 		.activity_header_sub {
 		  font-size: 10pt;
 		}
+		.section_sub ul {
+		  list-style-type: disc;
+		  padding-left: 22px;
+		  margin-top: 6px;
+		}
+
+		.section_sub li {
+		  margin-bottom: 6px;
+		}
         header { background-color: #f1f1f1; padding: 20px; text-align: center; }
         section { margin: 20px 0; }
         h2 { color: #333; }
         ul { list-style-type: none; padding: 0; }
         li { margin-bottom: 10px; }
+		list-style-type: disc;
+		padding-left: 20px;
     </style>
 
     <!-- Knowledge Panel / JSON-LD structured data -->
@@ -177,160 +188,162 @@
 		<section>
             <h2>Work & Project Experience</h2>		
 				<div class="section_sub">
-					<span class="activity_header"><strong>Enhancing Max Sequence Length in Large Multimodal Models</strong></span> <span class="location">Xtracta, Auckland, New Zealand</span><br />
-					<span class="activity_header activity_header_sub">Artificial Intelligence Researcher/Engineer</span> <span class="date">07/22 &ndash; now</span>
+				  <span class="activity_header"><strong>Enhancing Max Sequence Length in Large Multimodal Models</strong></span>
+				  <span class="location">Xtracta, Auckland, New Zealand</span><br />
+				  <span class="activity_header activity_header_sub">Artificial Intelligence Researcher/Engineer</span>
+				  <span class="date">07/22 &ndash; now</span>
+
+				  <ul class="tight">
 					<li>Investigated and implemented alternative attention mechanisms to extend the effective sequence length in multi-modal document processing models such as LayoutLMv3 and ERNIE-LayoutX.</li>
 					<li>By applied the sliding window technique and a global attention mask from Longformer to extend the maximum sequence length from 512 to 4096, which model among LayoutLMv3 and ERNIE-LayoutX achieves a higher F1 score on the XFUND, FUNSD and other company internal datasets without significantly increasing GPU memory usage.</li>
-					<li>Replicated the multi-task, multimodal pre-training code for LayoutLMv3, which Microsoft did not open source, including masked language modeling, masked image modeling, and word-patch alignment.</li>	
+					<li>Replicated the multi-task, multimodal pre-training code for LayoutLMv3, which Microsoft did not open source, including masked language modeling, masked image modeling, and word-patch alignment.</li>
 					<li>Integrated deepspeed and adapters into ERNIE-LayoutX and LayoutLMv3, which can reduce training costs, result in a smaller model size, and make it easier to deploy in the production environment.</li>
 					<li>Successfully applied for the Research & Development Tax Incentive (RDTI) grants from Callaghan Innovation (New Zealand's Innovation Agency) for both 2022 and 2023, each offering a tax credit equal to 15% of eligible R&D expenditure. This credit can be utilised to reduce the income tax payable by the company.</li>
 					<li>Integrated Flash-Attention 2 into Self-Attention can help ERNIE-LayoutX reduce maximum training GPU memory usage by up to 50% under FP16.</li>
 					<li>Applied affine transformations for data augmentation to train the model and improve the robustness of line alignment issues for document extraction.</li>
 					<li>By using the PEFT adapter, Flash-Attention 2 and GPTQ int4 quantization to continually train the Qwen3-VL-8B and make Qwen3-VL-8B training on 8*H200 GPUs.</li>
 					<li>Adding page embeddings to vision-language models (Qwen3-VL-8B and ERNIE-LayoutX) can improve their performance on fields that frequently appear on each page of a multi-page document (more than 15%), such as supplier names or bank names.</li>
-				</div>
-				
-				<!-- Kerrio.ai (kept, not removed) -->
-				<div class="section_sub">
-				<span class="activity_header"><strong>Head of AI &mdash; Cognitive ChatGPT Product MVP (GenAI)</strong></span>
-				<span class="location">Kerrio.ai (Invested by the son of Otto Happel, a German billionaire and former CEO of GEA), Auckland, New Zealand</span><br />
-				<span class="activity_header activity_header_sub">Head of AI / Lead Engineer (Hands-on MVP Builder)</span>
-				<span class="date">11/25 &ndash; Now</span>
-				<ul class="tight">
-				  <li>Owned end-to-end delivery of a <strong>cognitive ChatGPT-style AI product MVP</strong>, from use-case definition and rapid prototyping to implementation and iteration based on user feedback.</li>
-				  <li>Built a coaching-oriented conversational AI pipeline leveraging LLM prompting and structured training data to improve response quality and user outcomes, focusing on maintainability and fast experimentation.</li>
-				  <li>Established an evaluation and iteration loop (data collection &rarr; prompt/logic refinement &rarr; regression checks) to deliver predictable quality improvements across MVP releases.</li>
-				  <li>Collaborated with product and stakeholders to translate requirements into technical milestones, delivering in agile sprint cycles.</li>
-				  <li>Project reference: <a href="https://github.com/14H034160212/gptcoaching_mi_training">github.com/14H034160212/gptcoaching_mi_training</a></li>
-				</ul>
+				  </ul>
 				</div>
 
-			
+				<!-- Kerrio.ai (kept, not removed) -->
+				<div class="section_sub">
+				  <span class="activity_header"><strong>Head of AI &mdash; Cognitive ChatGPT Product MVP (GenAI)</strong></span>
+				  <span class="location">Kerrio.ai (Invested by the son of Otto Happel, a German billionaire and former CEO of GEA), Auckland, New Zealand</span><br />
+				  <span class="activity_header activity_header_sub">Head of AI / Lead Engineer (Hands-on MVP Builder)</span>
+				  <span class="date">11/25 &ndash; Now</span>
+
+				  <ul class="tight">
+					<li>Owned end-to-end delivery of a <strong>cognitive ChatGPT-style AI product MVP</strong>, from use-case definition and rapid prototyping to implementation and iteration based on user feedback.</li>
+					<li>Built a coaching-oriented conversational AI pipeline leveraging LLM prompting and structured training data to improve response quality and user outcomes, focusing on maintainability and fast experimentation.</li>
+					<li>Established an evaluation and iteration loop (data collection &rarr; prompt/logic refinement &rarr; regression checks) to deliver predictable quality improvements across MVP releases.</li>
+					<li>Collaborated with product and stakeholders to translate requirements into technical milestones, delivering in agile sprint cycles.</li>
+					<li>Project reference: <a href="https://github.com/14H034160212/gptcoaching_mi_training">github.com/14H034160212/gptcoaching_mi_training</a></li>
+				  </ul>
+				</div>
+
 				<div class="section_sub">
 				  <span class="activity_header"><strong>Adjunct Associate Professor</strong></span>
 				  <span class="location">Beijing International Studies University (BISU), Beijing, China</span><br />
 				  <span class="activity_header activity_header_sub">Adjunct Associate Professor</span>
 				  <span class="date">2025 &ndash; Now</span>
-				
+
 				  <ul class="tight">
 					<li>Adjunct appointment since 2025; involved in academic collaboration and mentoring on AI/NLP/multimodal systems.</li>
-				
 					<li><strong>Research focus (BISU): Multimodal Experiments for Short Drama Translation</strong> (Subtitle Recognition + Translation + TTS).
 					  Built a multimodal subtitle translation system for short dramas, covering <strong>Subtitle Recognition (VLM/OCR)</strong>,
 					  <strong>Subtitle Translation (LoRA fine-tuning)</strong>, and <strong>Japanese TTS (zero-shot voice cloning)</strong>,
 					  with scripted evaluation and reproducible environments.
 					  Project reference: <a href="https://github.com/14H034160212/translation">github.com/14H034160212/translation</a>
 					</li>
-				
 					<li>Subtitle recognition benchmarking across Qwen2-VL / Qwen3-VL / InternVL2 and traditional OCR baselines (EasyOCR, RapidOCR);
 					  ran <strong>FPS sensitivity ablation (1fps/2fps/5fps)</strong> and temporal deduplication to improve subtitle recall for fast-paced dialogue.</li>
-				
 					<li>TTS comparison (GPT-SoVITS v3 / F5-TTS / EdgeTTS) using Whisper-based <strong>WER/CER</strong>;
 					  implemented <strong>Adaptive Fusion (ASR + OCR)</strong> to correct ASR hallucinations using visual context.</li>
-				
 					<li><strong>Status:</strong> Manuscript is <strong>under submission</strong>. In parallel, actively preparing proposals for the
 					  <strong>National Natural Science Foundation of China (NSFC)</strong>.</li>
 				  </ul>
 				</div>
-					
+
 				<!-- Optional: Applied AI projects (kept concise, with CI/CD keywords) -->
 				<div class="section_sub">
-				<span class="activity_header"><strong>Applied AI Systems &amp; Decision Optimisation (Selected Projects)</strong></span>
-				<span class="location">Auckland, New Zealand</span><br />
-				<span class="activity_header activity_header_sub">Personal / Mentored Engineering Projects</span>
-				<span class="date">2025 &ndash; Now</span>
-				<ul class="tight">
-				  <li><strong>AlphaTrader</strong> — OpenClaw + DeepSeek stock prediction / signal + backtesting platform; includes <strong>Docker</strong>, <strong>GitHub Actions</strong>, <strong>unit tests</strong>, <strong>automated regression tests</strong>, and reproducible experiment pipelines.
-					Project reference: <a href="https://github.com/14H034160212/AlphaTrader">github.com/14H034160212/AlphaTrader</a>
-				  </li>
-				  <li><strong>AuroraBid</strong> — RL + Bandit ad bidding / auction demo (OAG Career mentor); includes reproducible simulation runs with <strong>CI/CD automation</strong>, tests, and experiment tracking patterns.
-					Project reference: <a href="https://github.com/14H034160212/AuroraBid">github.com/14H034160212/AuroraBid</a>
-				  </li>
-				</ul>
+				  <span class="activity_header"><strong>Applied AI Systems &amp; Decision Optimisation (Selected Projects)</strong></span>
+				  <span class="location">Auckland, New Zealand</span><br />
+				  <span class="activity_header activity_header_sub">Personal / Mentored Engineering Projects</span>
+				  <span class="date">2025 &ndash; Now</span>
+
+				  <ul class="tight">
+					<li><strong>AlphaTrader</strong> — OpenClaw + DeepSeek stock prediction / signal + backtesting platform; includes <strong>Docker</strong>, <strong>GitHub Actions</strong>, <strong>unit tests</strong>, <strong>automated regression tests</strong>, and reproducible experiment pipelines.
+					  Project reference: <a href="https://github.com/14H034160212/AlphaTrader">github.com/14H034160212/AlphaTrader</a>
+					</li>
+					<li><strong>AuroraBid</strong> — RL + Bandit ad bidding / auction demo (OAG Career mentor); includes reproducible simulation runs with <strong>CI/CD automation</strong>, tests, and experiment tracking patterns.
+					  Project reference: <a href="https://github.com/14H034160212/AuroraBid">github.com/14H034160212/AuroraBid</a>
+					</li>
+				  </ul>
 				</div>
 
 				<div class="section_sub">
-					<span class="activity_header"><strong>Large Language Model and Logical Reasoning (Ph.D. Main Topic)</strong></span>
-					<span class="location">UoA, Auckland, New Zealand</span><br />
-					<span class="activity_header activity_header_sub">Research &amp; Development Project Leader/Developer</span>
-					<span class="date">02/20 &ndash; 09/25</span>
-					<ul>
-					  <li>Recipient of research funding for the project Strong AI Lab (Grant No. 5000675), awarded by the Tertiary Education Commission under the Entrepreneurial Research Funding program, with a total grant amount of NZD 9.6 million. Qiming Bao was primarily responsible for the logical reasoning research direction within this project.</li>
-					
-					  <li>We have developed an iterative enhancement framework based on LLM for generating explanations. The framework iteratively interacts between an explanation generation module ad an explanation evaluation module to enhance the quality of the generated explanations. Our paper has been accepted by AAAI Proceedings (2025) and AGI@ICLR (2024).
-						<a href="https://ojs.aaai.org/index.php/AAAI/article/view/35164">paper</a>
-						and <a href="https://github.com/Strong-AI-Lab/Explanation-Generation">source code</a>.
-					  </li>
-					
-					  <li>Our method "AMR-LDA" (GPT-4 + AMR-LDA Prompt Augmentation) achieved #1 on the
-						<a href="https://eval.ai/challenge/503/leaderboard/1347">ReClor leaderboard</a>.
-						We are the first group scored above 90% on the hidden test set around the world. Our paper has been accepted by the Findings of ACL-24 and LLM@IJCAI'23 respectively.
-						<a href="https://aclanthology.org/2024.findings-acl.353/">paper</a>,
-						<a href="https://github.com/Strong-AI-Lab/Logical-Equivalence-driven-AMR-Data-Augmentation-for-Representation-Learning">source code</a>
-						and <a href="https://huggingface.co/qbao775/AMR-LE-DeBERTa-V2-XXLarge-Contraposition">model weights</a>.
-					  </li>
-					
-					  <li>We evaluated generative and discriminative large language models on out-of-distribution logical reasoning tasks. While these models perform well on standard benchmarks, even minor changes in the input lead to significant performance drops, highlighting their limited reasoning capabilities. Our paper was accepted at LLM@IJCAI'23
-						<a href="http://arxiv.org/abs/2310.09430">paper</a>
-						and IJCAI 2024
-						<a href="https://arxiv.org/abs/2305.19555">paper</a>
-						(cited over 100 times), and the corresponding
-						<a href="https://github.com/Strong-AI-Lab/Logical-and-abstract-reasoning">source code</a>
-						is available on GitHub.
-					  </li>
-					
-					  <li>To address depth imbalance in multi-step reasoning datasets and enhance model performance, we created the IMA-GloVe-GA model, combining DeepLogic with Gated Attention. Additionally, we developed a larger dataset, PARARULE-Plus, for deep multi-step reasoning over natural language. We published the
-						<a href="https://ceur-ws.org/Vol-3212/paper15.pdf">paper</a>,
-						<a href="https://github.com/Strong-AI-Lab/Multi-Step-Deductive-Reasoning-Over-Natural-Language">code and data</a>
-						and <a href="http://ilp.doc.ic.ac.uk/ijclr22_videos/NeSy%20Session%205%20-%20Thursday%2029th%20-%2014_40%20-%2015_50%20(BST)%20includes%20NeSy%20Invited%20Talk%20William%20Cohen.mp4">presentation recording</a>
-						on IJCLR-NeSy-22.
-					  </li>
-					
-					  <li>We built up a dataset called AbductionRules to increase the Transformer's performance on the tasks requiring abduction reasoning. We published the
-						<a href="https://aclanthology.org/2022.findings-acl.19/">paper</a>,
-						<a href="https://github.com/Strong-AI-Lab/AbductionRules">code and data</a>
-						on the Findings of ACL-22.
-					  </li>
-					
-					  <li>PARARULE Plus (Multi-step deductive reasoning) and AbductionRules (Abductive reasoning) datasets are collected and merged as part of
-						<a href="https://www.logitorch.ai/">LogiTorch.ai</a>,
-						<a href="https://github.com/FreedomIntelligence/ReasoningNLP">ReasoningNLP</a>,
-						<a href="https://github.com/zjunlp/Prompt4ReasoningPapers">Prompt4ReasoningPapers</a>,
-						<a href="https://github.com/openai/evals/pull/651">OpenAI/Evals</a>,
-						<a href="https://github.com/MLGroupJLU/LLM-eval-survey">A Survey on Evaluation of Large Language Models</a>
-						and <a href="https://github.com/spcl/x1">Reasoning Language Models: A Blueprint</a>.
-					  </li>
-					
-					  <li>OpenAI Evals contributions:
-						<a href="https://github.com/openai/evals/pull/648">github.com/openai/evals#648</a>,
-						<a href="https://github.com/openai/evals/pull/651">github.com/openai/evals#651</a>.
-					  </li>
-					
-					  <li>Additional reinforcement learning projects:
-						<a href="https://github.com/14H034160212/Explanation-Generation">github.com/14H034160212/Explanation-Generation</a>
-						and
-						<a href="https://github.com/14H034160212/lemo">github.com/14H034160212/lemo</a>.
-					  </li>
-					</ul>
-				</div>
-				
+				  <span class="activity_header"><strong>Large Language Model and Logical Reasoning (Ph.D. Main Topic)</strong></span>
+				  <span class="location">UoA, Auckland, New Zealand</span><br />
+				  <span class="activity_header activity_header_sub">Research &amp; Development Project Leader/Developer</span>
+				  <span class="date">02/20 &ndash; 09/25</span>
 
-                <div class="section_sub">
-					<span class="activity_header"><strong>Abstract Extraction and Multi-Turn Dialogue System</strong></span> <span class="location">Advanced Institute of Information Technology, Peking University, Hangzhou, China</span><br />
-					<span class="activity_header activity_header_sub">Research and Development Engineer</span> <span class="date">11/19 &ndash; 02/20</span>
-					
-					<li>We developed and researched a robot-based system including automatic abstract extraction, text segmentation, theme prediction, and multi-turn question answering. <!--<a href="https://14h03
-					60212.github.io/portofolio/aiit/index.html">Demo link</a>.--></li>
+				  <ul class="tight">
+					<li>Recipient of research funding for the project Strong AI Lab (Grant No. 5000675), awarded by the Tertiary Education Commission under the Entrepreneurial Research Funding program, with a total grant amount of NZD 9.6 million. Qiming Bao was primarily responsible for the logical reasoning research direction within this project.</li>
+					<li>We have developed an iterative enhancement framework based on LLM for generating explanations. The framework iteratively interacts between an explanation generation module ad an explanation evaluation module to enhance the quality of the generated explanations. Our paper has been accepted by AAAI Proceedings (2025) and AGI@ICLR (2024).
+					  <a href="https://ojs.aaai.org/index.php/AAAI/article/view/35164">paper</a> and <a href="https://github.com/Strong-AI-Lab/Explanation-Generation">source code</a>.
+					</li>
+					<li>Our method "AMR-LDA" (GPT-4 + AMR-LDA Prompt Augmentation) achieved #1 on the
+					  <a href="https://eval.ai/challenge/503/leaderboard/1347">ReClor leaderboard</a>.
+					  We are the first group scored above 90% on the hidden test set around the world. Our paper has been accepted by the Findings of ACL-24 and LLM@IJCAI'23 respectively.
+					  <a href="https://aclanthology.org/2024.findings-acl.353/">paper</a>,
+					  <a href="https://github.com/Strong-AI-Lab/Logical-Equivalence-driven-AMR-Data-Augmentation-for-Representation-Learning">source code</a>
+					  and <a href="https://huggingface.co/qbao775/AMR-LE-DeBERTa-V2-XXLarge-Contraposition">model weights</a>.
+					</li>
+					<li>We evaluated generative and discriminative large language models on out-of-distribution logical reasoning tasks. While these models perform well on standard benchmarks, even minor changes in the input lead to significant performance drops, highlighting their limited reasoning capabilities. Our paper was accepted at LLM@IJCAI'23
+					  <a href="http://arxiv.org/abs/2310.09430">paper</a> and IJCAI 2024
+					  <a href="https://arxiv.org/abs/2305.19555">paper</a> (cited over 100 times), and the corresponding
+					  <a href="https://github.com/Strong-AI-Lab/Logical-and-abstract-reasoning">source code</a> is available on GitHub.
+					</li>
+					<li>To address depth imbalance in multi-step reasoning datasets and enhance model performance, we created the IMA-GloVe-GA model, combining DeepLogic with Gated Attention. Additionally, we developed a larger dataset, PARARULE-Plus, for deep multi-step reasoning over natural language. We published the
+					  <a href="https://ceur-ws.org/Vol-3212/paper15.pdf">paper</a>,
+					  <a href="https://github.com/Strong-AI-Lab/Multi-Step-Deductive-Reasoning-Over-Natural-Language">code and data</a>
+					  and <a href="http://ilp.doc.ic.ac.uk/ijclr22_videos/NeSy%20Session%205%20-%20Thursday%2029th%20-%2014_40%20-%2015_50%20(BST)%20includes%20NeSy%20Invited%20Talk%20William%20Cohen.mp4">presentation recording</a>
+					  on IJCLR-NeSy-22.
+					</li>
+					<li>We built up a dataset called AbductionRules to increase the Transformer's performance on the tasks requiring abduction reasoning. We published the
+					  <a href="https://aclanthology.org/2022.findings-acl.19/">paper</a>,
+					  <a href="https://github.com/Strong-AI-Lab/AbductionRules">code and data</a>
+					  on the Findings of ACL-22.
+					</li>
+					<li>PARARULE Plus (Multi-step deductive reasoning) and AbductionRules (Abductive reasoning) datasets are collected and merged as part of
+					  <a href="https://www.logitorch.ai/">LogiTorch.ai</a>,
+					  <a href="https://github.com/FreedomIntelligence/ReasoningNLP">ReasoningNLP</a>,
+					  <a href="https://github.com/zjunlp/Prompt4ReasoningPapers">Prompt4ReasoningPapers</a>,
+					  <a href="https://github.com/openai/evals/pull/651">OpenAI/Evals</a>,
+					  <a href="https://github.com/MLGroupJLU/LLM-eval-survey">A Survey on Evaluation of Large Language Models</a>
+					  and <a href="https://github.com/spcl/x1">Reasoning Language Models: A Blueprint</a>.
+					</li>
+					<li>OpenAI Evals contributions:
+					  <a href="https://github.com/openai/evals/pull/648">github.com/openai/evals#648</a>,
+					  <a href="https://github.com/openai/evals/pull/651">github.com/openai/evals#651</a>.
+					</li>
+					<li>Additional reinforcement learning projects:
+					  <a href="https://github.com/14H034160212/Explanation-Generation">github.com/14H034160212/Explanation-Generation</a>
+					  and <a href="https://github.com/14H034160212/lemo">github.com/14H034160212/lemo</a>.
+					</li>
+				  </ul>
+				</div>
+
+				<div class="section_sub">
+				  <span class="activity_header"><strong>Abstract Extraction and Multi-Turn Dialogue System</strong></span>
+				  <span class="location">Advanced Institute of Information Technology, Peking University, Hangzhou, China</span><br />
+				  <span class="activity_header activity_header_sub">Research and Development Engineer</span>
+				  <span class="date">11/19 &ndash; 02/20</span>
+
+				  <ul class="tight">
+					<li>We developed and researched a robot-based system including automatic abstract extraction, text segmentation, theme prediction, and multi-turn question answering. <!--<a href="https://14h0360212.github.io/portofolio/aiit/index.html">Demo link</a>.--></li>
 					<li>Investigation and standard documentation of robot-related technologies.</li>
 					<li>We built a well-encapsulated API to implement meeting record document processing based on the abstract extraction, text segmentation, and theme prediction.</li>
-					</div>
-					<div class="section_sub">
-					<span class="activity_header"><strong>HHH: An Online Medical Chatbot System </strong></span> <span class="location">Precision Driven Health & Orion Health, Auckland, New Zealand</span><br />
-					<span class="activity_header activity_header_sub">Research Project Leader and Developer</span> <span class="date">11/18 &ndash; 04/19</span>
-					
+				  </ul>
+				</div>
+
+				<div class="section_sub">
+				  <span class="activity_header"><strong>HHH: An Online Medical Chatbot System</strong></span>
+				  <span class="location">Precision Driven Health &amp; Orion Health, Auckland, New Zealand</span><br />
+				  <span class="activity_header activity_header_sub">Research Project Leader and Developer</span>
+				  <span class="date">11/18 &ndash; 04/19</span>
+
+				  <ul class="tight">
 					<li>We developed a medical text similarity algorithm called HBAM using Pre-trained Language Model and Knowledge Graph.</li>
-					<li>Compared with BERT and MaLSTM models, HBAM performs higher test accuracy than the two Deep Learning models respectively <a href="https://github.com/14H034160212/HHH-An-Online-Question-Answering-System-for-Medical-Questions">code (#star: 90+)</a>, <a href="https://www.hinz.org.nz/news/461570/An-online-system-for-answering-medical-questions.htm">news</a>, <a href="https://youtu.be/zTK3zZtxHs4">recording</a> and <a href="https://arxiv.org/abs/2002.03140">published paper (#citation: 80+)</a> on ACSW-20.</li>
+					<li>Compared with BERT and MaLSTM models, HBAM performs higher test accuracy than the two Deep Learning models respectively
+					  <a href="https://github.com/14H034160212/HHH-An-Online-Question-Answering-System-for-Medical-Questions">code (#star: 90+)</a>,
+					  <a href="https://www.hinz.org.nz/news/461570/An-online-system-for-answering-medical-questions.htm">news</a>,
+					  <a href="https://youtu.be/zTK3zZtxHs4">recording</a>
+					  and <a href="https://arxiv.org/abs/2002.03140">published paper (#citation: 80+)</a> on ACSW-20.
+					</li>
 					<li><strong>NEW:</strong> Built a medical <strong>PII detection and redaction</strong> pipeline using <strong>spaCy</strong>, automatically identifying and replacing sensitive information (e.g., names, addresses, IDs) for privacy-preserving training and inference; project backed by <strong>AUT Venture investment (NZD 20,000)</strong>.</li>
+				  </ul>
 				</div>
         </section>
 		<section>
