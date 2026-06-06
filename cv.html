@@ -82,6 +82,7 @@
     }
     .header-item { display: flex; }
     ul.tight li{ margin-top:0.25em; }
+    .research-line{ clear:both; text-align:center; font-family:'Open Sans', sans-serif; font-size:11pt; line-height:13pt; white-space:nowrap; margin-top:2px; margin-bottom:0; }
 </style>
 </head><body>
 
@@ -101,7 +102,7 @@ First Name: QIMING<br>
 <div class="header-right">
 <br><br>
 Phone: (+64) 225120099<br>
-Email: bqmbill714@gmail.com<br>
+Email: <a href="mailto:bqmbill714@gmail.com">bqmbill714@gmail.com</a><br>
 <p style="font-size: 9pt;">GitHub: <a href="https://github.com/14H034160212">github.com/14H034160212</a></p>
 </div>
 
@@ -109,222 +110,129 @@ Email: bqmbill714@gmail.com<br>
 <h1>QIMING BAO</h1>
 </div>
 
-<br>
+<div class="research-line">Research: LLM Post-Training &middot; Alignment &middot; Logical Reasoning &middot; Agentic RL</div>
 <div class="clear"></div>
 </div>
 
 <div id="content">
 
 <div class="section">
+<h2>Summary</h2>
+<div class="section_sub">
+<p>AI Researcher/Engineer focused on LLM post-training, alignment, logical reasoning, and agentic RL. Ph.D. graduate from the University of Auckland with hands-on experience in SFT/DPO/RLHF-style alignment, reward-model design, NLI-as-reward, multimodal/document AI, and production-oriented evaluation loops. Recent work includes Hybrid-DPO for balancing logical grounding and fluency, Conflict-Aware Fusion for mitigating Logic Inertia, and applied Agent/FinTech/remote-sensing systems.</p>
+</div>
+</div>
+
+<div class="section">
+<h2>Core Skills</h2>
+<div class="section_sub">
+<ul class="tight">
+  <li><strong>Post-Training / Alignment</strong>: SFT, DPO, Hybrid-DPO, RLHF/PPO, GRPO, Reward Model design, NLI-as-reward, preference data synthesis.</li>
+  <li><strong>Reasoning / Data</strong>: logical reasoning, AMR, data augmentation, OOD generalisation, Chain-of-Thought, multi-turn decision trajectory synthesis.</li>
+  <li><strong>Training Engineering</strong>: PyTorch, PEFT/LoRA, Flash-Attention 2, vLLM, Megatron, int4 quantisation, single-GPU 7B-class training workflows.</li>
+  <li><strong>Agentic / Simulation</strong>: LLM Agents, Tool Use, RL simulation environments, PPO reward alignment, financial AI Agents, multi-step execution traces.</li>
+  <li><strong>Multimodal / Document AI</strong>: Qwen3.5-9B, Gemma 4, InternVL2, LayoutLMv3, ERNIE-LayoutX, OCR, long-sequence extension to 4096.</li>
+</ul>
+</div>
+</div>
+
+<div class="section">
 <h2>Work &amp; Project Experience</h2>
 
 <!-- PhD -->
 <div class="section_sub">
-<span class="activity_header"><strong>Large Language Model and Logical Reasoning (Ph.D. Main Topic)</strong></span>
-<span class="location">UoA, Auckland, New Zealand</span><br />
-<span class="activity_header activity_header_sub">Research &amp; Development Project Leader/Developer</span>
+<span class="activity_header"><strong>Large Language Model Post-Training, Alignment and Logical Reasoning (Ph.D.)</strong></span>
+<span class="location">Strong AI Lab / NAO Institute, UoA, Auckland</span><br />
+<span class="activity_header activity_header_sub">Research Project Leader / Developer</span>
 <span class="date">02/20 &ndash; 09/25</span>
-<ul>
-  <li>Recipient of research funding for the project Strong AI Lab (Grant No. 5000675), awarded by the Tertiary Education Commission under the Entrepreneurial Research Funding program, with a total grant amount of NZD 9.6 million. Qiming Bao was primarily responsible for the logical reasoning research direction within this project.</li>
-
-  <li>We have developed an iterative enhancement framework based on LLM for generating explanations. The framework iteratively interacts between an explanation generation module ad an explanation evaluation module to enhance the quality of the generated explanations. Our paper has been accepted by AAAI Proceedings (2025) and AGI@ICLR (2024).
-    <a href="https://ojs.aaai.org/index.php/AAAI/article/view/35164">paper</a>
-    and <a href="https://github.com/Strong-AI-Lab/Explanation-Generation">source code</a>.
-  </li>
-
-  <li>Our method "AMR-LDA" (GPT-4 + AMR-LDA Prompt Augmentation) achieved #1 on the
-    <a href="https://eval.ai/challenge/503/leaderboard/1347">ReClor leaderboard</a>.
-    We are the first group scored above 90% on the hidden test set around the world. Our paper has been accepted by the Findings of ACL-24 and LLM@IJCAI'23 respectively.
-    <a href="https://aclanthology.org/2024.findings-acl.353/">paper</a>,
-    <a href="https://github.com/Strong-AI-Lab/Logical-Equivalence-driven-AMR-Data-Augmentation-for-Representation-Learning">source code</a>
-    and <a href="https://huggingface.co/qbao775/AMR-LE-DeBERTa-V2-XXLarge-Contraposition">model weights</a>.
-  </li>
-
-  <li>We evaluated generative and discriminative large language models on out-of-distribution logical reasoning tasks. While these models perform well on standard benchmarks, even minor changes in the input lead to significant performance drops, highlighting their limited reasoning capabilities. Our paper was accepted at LLM@IJCAI'23
-    <a href="http://arxiv.org/abs/2310.09430">paper</a>
-    and IJCAI 2024
-    <a href="https://arxiv.org/abs/2305.19555">paper</a>
-    (cited over 100 times), and the corresponding
-    <a href="https://github.com/Strong-AI-Lab/Logical-and-abstract-reasoning">source code</a>
-    is available on GitHub.
-  </li>
-
-  <li>To address depth imbalance in multi-step reasoning datasets and enhance model performance, we created the IMA-GloVe-GA model, combining DeepLogic with Gated Attention. Additionally, we developed a larger dataset, PARARULE-Plus, for deep multi-step reasoning over natural language. We published the
-    <a href="https://ceur-ws.org/Vol-3212/paper15.pdf">paper</a>,
-    <a href="https://github.com/Strong-AI-Lab/Multi-Step-Deductive-Reasoning-Over-Natural-Language">code and data</a>
-    and <a href="http://ilp.doc.ic.ac.uk/ijclr22_videos/NeSy%20Session%205%20-%20Thursday%2029th%20-%2014_40%20-%2015_50%20(BST)%20includes%20NeSy%20Invited%20Talk%20William%20Cohen.mp4">presentation recording</a>
-    on IJCLR-NeSy-22.
-  </li>
-
-  <li>We built up a dataset called AbductionRules to increase the Transformer's performance on the tasks requiring abduction reasoning. We published the
-    <a href="https://aclanthology.org/2022.findings-acl.19/">paper</a>,
-    <a href="https://github.com/Strong-AI-Lab/AbductionRules">code and data</a>
-    on the Findings of ACL-22.
-  </li>
-
-  <li>PARARULE Plus (Multi-step deductive reasoning) and AbductionRules (Abductive reasoning) datasets are collected and merged as part of
-    <a href="https://www.logitorch.ai/">LogiTorch.ai</a>,
-    <a href="https://github.com/FreedomIntelligence/ReasoningNLP">ReasoningNLP</a>,
-    <a href="https://github.com/zjunlp/Prompt4ReasoningPapers">Prompt4ReasoningPapers</a>,
-    <a href="https://github.com/openai/evals/pull/651">OpenAI/Evals</a>,
-    <a href="https://github.com/MLGroupJLU/LLM-eval-survey">A Survey on Evaluation of Large Language Models</a>
-    and <a href="https://github.com/spcl/x1">Reasoning Language Models: A Blueprint</a>.
-  </li>
-
-  <li>OpenAI Evals contributions:
-    <a href="https://github.com/openai/evals/pull/648">github.com/openai/evals#648</a>,
-    <a href="https://github.com/openai/evals/pull/651">github.com/openai/evals#651</a>.
-  </li>
-
-  <li>Additional reinforcement learning projects:
-    <a href="https://github.com/14H034160212/Explanation-Generation">github.com/14H034160212/Explanation-Generation</a>
-    and
-    <a href="https://github.com/14H034160212/lemo">github.com/14H034160212/lemo</a>.
-  </li>
-</ul>
-</div>
-
-<div class="section_sub">
-  <span class="activity_header"><strong>Adjunct Associate Professor</strong></span>
-  <span class="location">Beijing International Studies University (BISU), Beijing, China</span><br />
-  <span class="activity_header activity_header_sub">Adjunct Associate Professor</span>
-  <span class="date">2025 &ndash; Now</span>
-
-  <ul class="tight">
-    <li>Adjunct appointment since 2025; involved in academic collaboration and mentoring on AI/NLP/multimodal systems.</li>
-
-    <li><strong>Research focus (BISU): Multimodal Experiments for Short Drama Translation</strong> (Subtitle Recognition + Translation + TTS).
-      Built a multimodal subtitle translation system for short dramas, covering <strong>Subtitle Recognition (VLM/OCR)</strong>,
-      <strong>Subtitle Translation (LoRA fine-tuning)</strong>, and <strong>Japanese TTS (zero-shot voice cloning)</strong>,
-      with scripted evaluation and reproducible environments.
-      Project reference: <a href="https://github.com/14H034160212/translation">github.com/14H034160212/translation</a>
-    </li>
-
-    <li>Subtitle recognition benchmarking across Qwen2-VL / Qwen3-VL / InternVL2 and traditional OCR baselines (EasyOCR, RapidOCR);
-      ran <strong>FPS sensitivity ablation (1fps/2fps/5fps)</strong> and temporal deduplication to improve subtitle recall for fast-paced dialogue.</li>
-
-    <li>TTS comparison (GPT-SoVITS v3 / F5-TTS / EdgeTTS) using Whisper-based <strong>WER/CER</strong>;
-      implemented <strong>Adaptive Fusion (ASR + OCR)</strong> to correct ASR hallucinations using visual context.</li>
-
-    <li><strong>Status:</strong> Manuscript is <strong>under submission</strong>. In parallel, actively preparing proposals for the
-      <strong>National Natural Science Foundation of China (NSFC)</strong>.</li>
-  </ul>
-</div>
-
-<!-- Optional: Applied AI projects (kept concise, with CI/CD keywords) -->
-<div class="section_sub">
-<span class="activity_header"><strong>Applied AI Systems &amp; Decision Optimisation (Selected Projects)</strong></span>
-<span class="location">Auckland, New Zealand</span><br />
-<span class="activity_header activity_header_sub">Personal / Mentored Engineering Projects</span>
-<span class="date">2025 &ndash; Now</span>
 <ul class="tight">
-  <li><strong>AlphaTrader</strong> — OpenClaw + DeepSeek stock prediction / signal + backtesting platform; includes <strong>Docker</strong>, <strong>GitHub Actions</strong>, <strong>unit tests</strong>, <strong>automated regression tests</strong>, and reproducible experiment pipelines.
-    Project reference: <a href="https://github.com/14H034160212/AlphaTrader">github.com/14H034160212/AlphaTrader</a>
-  </li>
-  <li><strong>AuroraBid</strong> — RL + Bandit ad bidding / auction demo (OAG Career mentor); includes reproducible simulation runs with <strong>CI/CD automation</strong>, tests, and experiment tracking patterns.
-    Project reference: <a href="https://github.com/14H034160212/AuroraBid">github.com/14H034160212/AuroraBid</a>
-    Demo reference: <a href="https://aurorabid.pages.dev/">aurorabid.pages.dev</a>
-  </li>
+  <li><strong>RLearner-LLM / Hybrid-DPO</strong>: designed an automated preference pipeline combining DeBERTa-v3 NLI signals and Verifier LLM rewards to reduce verbosity bias in standard preference signals; validated across LLaMA-2-13B, Qwen3-8B and Gemma 4 families, with up to 6&times; NLI-alignment improvement and 95% pairwise win rate for the Qwen3-8B version.</li>
+  <li><strong>Conflict-Aware Fusion / Logic Inertia</strong>: defined and quantified Logic Inertia, a failure mode where LLM reasoning collapses under conflicting rules; proposed a dual-process cognitive architecture separating premise verification from logical derivation, reaching 100% accuracy on contradiction-injection and base-task stress tests.</li>
+  <li><strong>AMR-LDA</strong>: proposed AMR-based logic-equivalent data augmentation with GPT-4 prompt augmentation; achieved #1 on the ReClor leaderboard and became the first team above 90% on the hidden test set. <a href="https://aclanthology.org/2024.findings-acl.353/">paper</a>, <a href="https://github.com/Strong-AI-Lab/Logical-Equivalence-driven-AMR-Data-Augmentation-for-Representation-Learning">source code</a>, <a href="https://huggingface.co/qbao775/AMR-LE-DeBERTa-V2-XXLarge-Contraposition">model weights</a>.</li>
+  <li><strong>OOD logical reasoning evaluation</strong>: designed four structural perturbation stress tests including rule deletion, contradiction injection, logic-preserving rewriting and multi-rule equivalence; revealed significant robustness gaps in generative and discriminative LLMs, with related IJCAI 2024 work cited 100+ times.</li>
+  <li><strong>Iterative Enhancement / Educational LLM</strong>: developed a closed-loop explanation generation and evaluation framework for learnersourced multiple-choice questions, accepted by AAAI 2025 and AGI@ICLR 2024. <a href="https://ojs.aaai.org/index.php/AAAI/article/view/35164">paper</a>, <a href="https://github.com/Strong-AI-Lab/Explanation-Generation">source code</a>.</li>
+  <li>OpenAI Evals contributions: <a href="https://github.com/openai/evals/pull/648">openai/evals#648</a>, <a href="https://github.com/openai/evals/pull/651">openai/evals#651</a>.</li>
 </ul>
 </div>
 
+<!-- Xtracta -->
 <div class="section_sub">
-  <span class="activity_header"><strong>LLM-Accounting — AI Accounting & Tax Automation Platform</strong></span>
-  <span class="location">Personal Project</span><br>
-  <span class="activity_header activity_header_sub">Applied LLM Systems / FinTech / Multimodal AI</span>
-  <span class="date">2025 – Present</span>
-  <ul>
-    <li>Built an LLM-based accounting and tax platform for ANZ SMEs, integrating AI bookkeeping, invoice OCR, financial reporting, tax workflow assistance, and conversational support.</li>
-    <li>Implemented multimodal document processing for invoice extraction using locally deployed vision-language models via Ollama, enabling privacy-conscious processing without paid API dependency.</li>
-    <li>Designed role-based AI agent workflows for accounting Q&amp;A, reporting support, and financial operations, combining structured business data with natural-language interaction.</li>
-    <li>Developed the product stack with Next.js 16, React 19, Tailwind CSS, and local open-source LLM infrastructure, with separate API routes for chat and OCR services.</li>
-    <li>Used the project to explore practical deployment patterns for domain-specific LLM systems in finance-related software.</li>
-    <li>Project reference: <a href="https://github.com/14H034160212/LLM-Accounting">github.com/14H034160212/LLM-Accounting</a></li>
+<span class="activity_header"><strong>Xtracta &mdash; Multimodal LLM/VLM Training, Evaluation and Document AI</strong></span>
+<span class="location">Xtracta, Auckland, New Zealand</span><br />
+<span class="activity_header activity_header_sub">Artificial Intelligence Researcher / Engineer</span>
+<span class="date">07/22 &ndash; Now</span>
+<ul class="tight">
+  <li><strong>Multimodal model training and evaluation</strong>: continually trained and evaluated Qwen3.5-9B, Gemma 4 E4B/31B and InternVL2 with PEFT/LoRA for document and privacy-related benchmarks including CustodianAI medical PII redaction.</li>
+  <li>Integrated Flash-Attention 2 to reduce FP16 peak memory by up to 50%; used int4 quantisation to enable complete training workflows on a single A4090 24GB setup for targeted models.</li>
+  <li><strong>Long-sequence extension</strong>: extended LayoutLMv3 / ERNIE-LayoutX maximum sequence length from 512 to 4096 via sliding-window attention and Longformer-style global attention masks, improving F1 on XFUND, FUNSD and internal token-classification / relation-extraction datasets without obvious GPU-memory growth.</li>
+  <li><strong>LayoutLMv3 pretraining reproduction</strong>: reproduced the non-open-sourced MLM + MIM + WPA multimodal pretraining process and integrated global-attention masks for stronger text&ndash;vision alignment.</li>
+  <li>Applied affine-transform augmentation to improve line-alignment robustness for document extraction; successfully supported Callaghan Innovation RDTI applications for 2022/2023.</li>
+</ul>
+</div>
+
+<!-- BISU -->
+<div class="section_sub">
+  <span class="activity_header"><strong>Beijing International Studies University (BISU) &mdash; Adjunct Associate Professor</strong></span>
+  <span class="location">Beijing, China</span><br />
+  <span class="activity_header activity_header_sub">Adjunct Associate Professor / Collaboration Mentor</span>
+  <span class="date">2025 &ndash; Now</span>
+  <ul class="tight">
+    <li><strong>GeoDisaster-FM</strong>: built a remote-sensing perception &rarr; neural-symbolic reasoning &rarr; RL decision-making loop for geospatial disaster response; compared against U-Net, DeepLabV3+ and Google AlphaEarth with cross-region/cross-disaster ablations, improving change-detection F1 by +0.087.</li>
+    <li>Designed PPO-based annotation/decision policies; on 10 real disaster events, decision outputs reached r=0.971 correlation with ground truth and processed chips in about 0.03s/chip compared with expert workflows requiring 1&ndash;3 days.</li>
+    <li><strong>Flood Foundation Model</strong>: integrated Sentinel-1/2 multimodal remote-sensing data and built reproducible pipelines plus real-time dashboards deployed via GitHub Pages and Cloudflare Pages, covering 10+ real cross-region/cross-disaster events.</li>
+    <li><strong>Short-drama multimodal translation</strong>: developed an end-to-end pipeline using Qwen3.5-9B / Qwen3-VL / InternVL2 / Gemma 4 subtitle recognition, 1/2/5fps frame-rate ablation, LoRA translation fine-tuning, GPT-SoVITS v3/F5-TTS speech synthesis, ASR+OCR adaptive fusion and Whisper WER/CER evaluation.</li>
   </ul>
 </div>
 
-<!-- Kerrio.ai (kept, not removed) -->
+<!-- Kerrio.ai -->
 <div class="section_sub">
-<span class="activity_header"><strong>Kerrio.ai &mdash; Cognitive ChatGPT Product MVP (GenAI)</strong></span>
-<span class="location">Kerrio.ai (Invested by the son of Otto Happel, a German billionaire and former CEO of GEA), Auckland, New Zealand</span><br />
-<span class="activity_header activity_header_sub">Hands-on MVP Builder</span>
+<span class="activity_header"><strong>Kerrio.ai &mdash; Motivational Interviewing Dialogue Training MVP</strong></span>
+<span class="location">Kerrio.ai, Auckland, New Zealand</span><br />
+<span class="activity_header activity_header_sub">AI Technical Lead / Consultant</span>
 <span class="date">11/25 &ndash; Now</span>
 <ul class="tight">
-  <li>Owned end-to-end delivery of a <strong>cognitive ChatGPT-style AI product MVP</strong>, from use-case definition and rapid prototyping to implementation and iteration based on user feedback.</li>
-  <li>Built a coaching-oriented conversational AI pipeline leveraging LLM prompting and structured training data to improve response quality and user outcomes, focusing on maintainability and fast experimentation.</li>
-  <li>Established an evaluation and iteration loop (data collection &rarr; prompt/logic refinement &rarr; regression checks) to deliver predictable quality improvements across MVP releases.</li>
-  <li>Collaborated with product and stakeholders to translate requirements into technical milestones, delivering in agile sprint cycles.</li>
-  <li>Project reference: <a href="https://github.com/14H034160212/gptcoaching_mi_training">github.com/14H034160212/gptcoaching_mi_training</a></li>
-  <li>Demo reference: <a href="http://gptcoaching-mi-training.pages.dev/">gptcoaching-mi-training.pages.dev/</a></li>
+  <li>Built a large-model dialogue training and evaluation loop for Motivational Interviewing, including data preparation, prompt-template design, multi-turn behaviour constraints, consistency optimisation and regression checks.</li>
+  <li>Structured the architecture for extension into agentic workflows with tool use, safety strategy and compliance modules. <a href="https://github.com/14H034160212/gptcoaching_mi_training">Project</a>, <a href="https://gptcoaching-mi-training.pages.dev/">Demo</a>.</li>
 </ul>
 </div>
 
-<!-- Xtracta (kept) -->
+<!-- Applied AI -->
 <div class="section_sub">
-<span class="activity_header"><strong>Enhancing Max Sequence Length in Large Multimodal Models</strong></span>
-<span class="location">Xtracta (<b>Accredited Employer</b>), Auckland, New Zealand</span><br />
-<span class="activity_header activity_header_sub">Artificial Intelligence Researcher/Engineer</span>
-<span class="date">07/22 &ndash; now</span>
-<ul>
-<li>Investigated and implemented alternative attention mechanisms to extend the effective sequence length in multi-modal document processing models such as LayoutLMv3 and ERNIE-LayoutX.</li>
-<li>By applied the sliding window technique and a global attention mask from Longformer to extend the maximum sequence length from 512 to 4096, which model among LayoutLMv3 and ERNIE-LayoutX achieves a higher F1 score on the XFUND, FUNSD and other company internal datasets without significantly increasing GPU memory usage.</li>
-<li>Replicated the multi-task, multimodal pre-training code for LayoutLMv3, which Microsoft did not open source, including masked language modeling, masked image modeling, and word-patch alignment.</li>
-<li>Integrated DeepSpeed and adapters into ERNIE-LayoutX and LayoutLMv3, which can reduce training costs, result in a smaller model size, and make it easier to deploy in the production environment.</li>
-<li>Successfully applied for the Research &amp; Development Tax Incentive (RDTI) grants from Callaghan Innovation (New Zealand's Innovation Agency) for both 2022 and 2023.</li>
-<li>Integrated Flash-Attention 2 into Self-Attention can help ERNIE-LayoutX reduce maximum training GPU memory usage by up to 50% under FP16.</li>
-<li>Applied affine transformations for data augmentation to train the model and improve the robustness of line alignment issues for document extraction.</li>
-<li>By using the PEFT adapter, Flash-Attention 2 and GPTQ int4 quantization to continually train the Qwen3-VL-8B and make Qwen3-VL-8B training on 8*H200 GPU.</li>
-<li>Adding page embeddings to vision-language models (Qwen3-VL-8B and ERNIE-LayoutX) can improve their performance on fields that frequently appear on each page of a multi-page document (more than 15%).</li>
+<span class="activity_header"><strong>Quantitative Trading, RL and Financial AI Agents (Selected Projects)</strong></span>
+<span class="location">Personal / Mentored Projects</span><br />
+<span class="activity_header activity_header_sub">Applied LLM Systems / RL / FinTech</span>
+<span class="date">2025 &ndash; Now</span>
+<ul class="tight">
+  <li><strong>AlphaTrader Pro</strong>: built an AI trading agent pipeline covering multi-source market perception, LLM signal generation, risk checks, automated execution and feedback; implemented market-query, indicator, event-scanning, risk-assessment and order-execution tools with Alpaca/Moomoo integration, Kelly sizing, VIX risk scaling, cooldown periods and stop-loss monitoring. <a href="https://github.com/14H034160212/AlphaTrader">GitHub</a>.</li>
+  <li><strong>AuroraBid</strong>: built an RL/Bandit advertising bidding simulation environment with multiple-strategy comparison, offline evaluation, CI/CD automation and reproducible experiment pipelines. <a href="https://github.com/14H034160212/AuroraBid">GitHub</a>, <a href="https://aurorabid.pages.dev/">Demo</a>.</li>
+  <li><strong>LLM-Accounting</strong>: implemented a financial automation platform with VLM invoice OCR, LLM bookkeeping pipelines, automatic journal-entry/report generation, local Ollama + Qwen inference for privacy, and a Next.js + React frontend. <a href="https://github.com/14H034160212/LLM-Accounting">GitHub</a>.</li>
 </ul>
 </div>
 
-<!-- AIIT (kept) -->
+<!-- Earlier -->
 <div class="section_sub">
-<span class="activity_header"><strong>Abstract Extraction and Multi-Turn Dialogue System</strong></span>
-<span class="location">Advanced Institute of Information Technology, Peking University, Hangzhou, China</span><br />
-<span class="activity_header activity_header_sub">Research and Development Engineer</span>
-<span class="date">11/19 &ndash; 02/20</span>
-<ul>
-<li>We developed and researched a robot-based system including automatic abstract extraction, text segmentation, theme prediction, and multi-turn question answering.</li>
-<li>Investigation and standard documentation of robot-related technologies.</li>
-<li>We built a well-encapsulated API to implement meeting record document processing based on the abstract extraction, text segmentation, and theme prediction.</li>
-</ul>
-</div>
-
-<!-- PDH (kept + corrected repo link) -->
-<div class="section_sub">
-<span class="activity_header"><strong>HHH: An Online Medical Chatbot System </strong></span>
-<span class="location">Precision Driven Health &amp; Orion Health, Auckland, New Zealand</span><br />
-<span class="activity_header activity_header_sub">Research Project Leader and Developer</span>
-<span class="date">11/18 &ndash; 04/19</span>
-<ul>
-<li>We developed a medical text similarity algorithm called HBAM using Pre-trained Language Model and Knowledge Graph.</li>
-<li>Compared with BERT and MaLSTM models, HBAM performs higher test accuracy than the two Deep Learning models respectively
-  <a href="https://github.com/14H034160212/HHH-An-Online-Question-Answering-System-for-Medical-Questions">github.com/14H034160212/HHH-An-Online-Question-Answering-System-for-Medical-Questions</a>,
-  <a href="https://www.hinz.org.nz/news/461570/An-online-system-for-answering-medical-questions.htm">news</a>,
-  <a href="https://youtu.be/zTK3zZtxHs4">recording</a>
-  and <a href="https://arxiv.org/abs/2002.03140">published paper</a> on ACSW-20.
-</li>
-<li>
-  <strong>NEW:</strong> Built a medical <strong>PII detection and redaction</strong> pipeline using <strong>spaCy</strong> for privacy-preserving training and inference. The project has secured <strong>AUT Venture investment (NZD 60,000)</strong> and led to the establishment of <a href="https://custodian-docs.vercel.app/" target="_blank" rel="noopener noreferrer"><strong>CustodianAI</strong></a>. We also developed a toolkit that helps users build their own <strong>large language models</strong> with built-in <strong>privacy protection</strong>, reducing privacy leakage while preserving data utility.
-</li>
-<li>Demo reference: <a href="https://custodianai.pages.dev/">custodianai.pages.dev</a></li>
+<span class="activity_header"><strong>NLP R&amp;D Internships &amp; Medical NLP</strong></span>
+<span class="location">AIIT, Peking University / Precision Driven Health</span><br />
+<span class="activity_header activity_header_sub">R&amp;D Engineer / Research Project Leader</span>
+<span class="date">2018 &ndash; 2020</span>
+<ul class="tight">
+  <li>Developed a meeting-robot NLP pipeline for abstract extraction, text segmentation, topic prediction and multi-turn QA, with reusable APIs for meeting-record processing.</li>
+  <li>Proposed HBAM for medical text similarity, published at ACSW 2020 with 90+ citations; built a medical PII detection and redaction pipeline and privacy-preserving LLM toolkit that supported the establishment of <a href="https://custodian-docs.vercel.app/" target="_blank" rel="noopener noreferrer"><strong>CustodianAI</strong></a> and AUT Venture investment of NZD 60,000. <a href="https://custodianai.pages.dev/">Demo</a>.</li>
 </ul>
 </div>
 
 </div><!-- Work & Project Experience -->
 
-<!-- Education (kept) -->
+<!-- Education -->
 <div class="section">
 <h2>Education</h2>
 <div class="section_sub">
 <span class="activity_header"><strong>University of Auckland (UoA)</strong></span><span class="location">Auckland, New Zealand</span><br />
-<span class="activity_header activity_header_sub">Ph.D. of Computer Science supervised by Prof. Michael Witbrock and Assoc Prof. Jiamou Liu</span>
+<span class="activity_header activity_header_sub">Ph.D. in Computer Science, fully funded; supervised by Prof. Michael Witbrock and Assoc Prof. Jiamou Liu</span>
 <span class="date">02/20 &ndash; 09/25</span>
-<ul>
-<li><a href="https://www.daad.de/en/the-daad/postdocnet/fellows/fellows/#BaoQiming">DAAD AINeT fellow 2025 on Natural Language Processing</a></li>
-<li>PhD Research Project Scholarship/Outstanding PhD Mentor</li>
-<li>Graduate Teaching Assistant (Tutor)/Research Assistant (Professional Casual Staff)</li>
+<ul class="tight">
+<li><a href="https://www.daad.de/en/the-daad/postdocnet/fellows/fellows/#BaoQiming">DAAD AINeT Fellow 2025 on Natural Language Processing</a></li>
+<li>Graduate Teaching Assistant / Research Assistant</li>
 </ul>
 </div>
 
@@ -332,10 +240,18 @@ Email: bqmbill714@gmail.com<br>
 <span class="activity_header"><strong>University of Auckland (UoA)</strong></span><span class="location">Auckland, New Zealand</span><br />
 <span class="activity_header activity_header_sub">Bachelor of Science (Honours) in Computer Science (First Class), GPA: 7/9</span>
 <span class="date">07/18 &ndash; 09/19</span>
-<ul>
+<ul class="tight">
 <li>Precision Driven Health &amp; Orion Health Summer Research Scholarship</li>
 </ul>
 </div>
+
+<!--
+<div class="section_sub">
+<span class="activity_header"><strong>China Jiliang University</strong></span><span class="location">Hangzhou, China</span><br />
+<span class="activity_header activity_header_sub">Bachelor of Computer Science</span>
+<span class="date">09/14 &ndash; 06/18</span>
+</div>
+-->
 </div>
 
 <!-- Paper List (kept mostly as-is; you can remove later if you want) -->
@@ -381,7 +297,7 @@ Email: bqmbill714@gmail.com<br>
 </div><!-- content -->
 </div><!-- container -->
 
-<img src="http://jobminestats.appspot.com/Ping/ag5zfmpvYm1pbmVzdGF0c3IMCxIFUGl4ZWwY0Q8M.gif" height="0" width="0" />
+<img src="https://jobminestats.appspot.com/Ping/ag5zfmpvYm1pbmVzdGF0c3IMCxIFUGl4ZWwY0Q8M.gif" height="0" width="0" />
 <script data-cfasync="false" src="/cdn-cgi/scripts/5c5dd728/cloudflare-static/email-decode.min.js"></script>
 <script type="text/javascript">
   var _gaq = _gaq || [];
@@ -396,4 +312,3 @@ Email: bqmbill714@gmail.com<br>
 </script>
 <script src="https://ajax.cloudflare.com/cdn-cgi/scripts/a2bd7673/cloudflare-static/rocket-loader.min.js" defer=""></script>
 </body></html>
-
