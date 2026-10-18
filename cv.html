@@ -167,6 +167,8 @@ Email: <a href="mailto:bqmbill714@gmail.com">bqmbill714@gmail.com</a><br>
   <li><strong>Long-sequence extension</strong>: extended LayoutLMv3 / ERNIE-LayoutX maximum sequence length from 512 to 4096 via sliding-window attention and Longformer-style global attention masks, improving F1 on XFUND, FUNSD and internal token-classification / relation-extraction datasets without obvious GPU-memory growth.</li>
   <li><strong>LayoutLMv3 pretraining reproduction</strong>: reproduced the non-open-sourced MLM + MIM + WPA multimodal pretraining process and integrated global-attention masks for stronger text&ndash;vision alignment.</li>
   <li>Applied affine-transform augmentation to improve line-alignment robustness for document extraction; successfully supported Callaghan Innovation RDTI applications for 2022/2023.</li>
+  <li>Developed a synthetic bounding box generation approach for automatic line extraction, enabling a 200M-parameter encoder model to extract columns with missing values in the first row of bank statements.</li>
+  <li>Developed an agent-based pipeline to automatically review ground-truth data quality, identifying labeling issues in approximately 10% of 12,000 bank statement documents.</li>
 </ul>
 </div>
 
