@@ -154,6 +154,8 @@ GitHub: <a href="https://github.com/14H034160212">github.com/14H034160212</a><br
 <li>Applied affine transformations for data augmentation to train the model and improve the robustness of line alignment issues for document extraction.</li>
 <li>By using the PEFT adapter, Flash-Attention 2 and GPTQ int4 quantization to continually train the Qwen3-VL-8B and make Qwen3-VL-8B training on 8*H200 GPU.</li>
 <li>Adding page embeddings to vision-language models (Qwen3-VL-8B and ERNIE-LayoutX) can improve their performance on fields that frequently appear on each page of a multi-page document (more than 15%), such as supplier names or bank names.</li>
+<li>Developed a synthetic bounding box generation approach for automatic line extraction, enabling a 200M-parameter encoder model to extract columns with missing values in the first row of bank statements.</li>
+<li>Developed an agent-based pipeline to automatically review ground-truth data quality, identifying labeling issues in approximately 10% of 12,000 bank statement documents.</li>
 </ul>
 </div>
 
