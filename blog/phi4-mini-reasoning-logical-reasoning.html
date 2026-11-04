@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Where does a 3.8B reasoning model break? Testing Phi-4-mini-reasoning on deduction and abduction | Qiming Bao</title>
+<meta name="description" content="Testing Microsoft's Phi-4-mini-reasoning (3.8B) and Phi-4-mini-instruct on deductive and abductive logical reasoning with PARARULE-Plus and AbductionRules: abduction +24 points, negation near chance, and long thinking as a warning sign.">
+<link rel="canonical" href="https://14h034160212.github.io/blog/phi4-mini-reasoning-logical-reasoning.html">
+<link rel="icon" type="image/jpeg" href="../qiming.jpg">
+<style>
+:root { --fg:#1f2328; --muted:#59636e; --bg:#ffffff; --code:#f6f8fa; --line:#d1d9e0; --link:#0969da; }
+@media (prefers-color-scheme: dark) { :root { --fg:#e6edf3; --muted:#9198a1; --bg:#0d1117; --code:#161b22; --line:#3d444d; --link:#4493f8; } }
+body { font-family: -apple-system, "Segoe UI", Arial, sans-serif; color:var(--fg); background:var(--bg); margin:0; line-height:1.65; }
+main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: 1.9rem; line-height:1.25; margin: 0.4em 0 0.2em; }
+h2 { margin-top: 2em; border-bottom:1px solid var(--line); padding-bottom:.2em; }
+a { color: var(--link); }
+.meta { color: var(--muted); font-size: .92rem; }
+table { border-collapse: collapse; margin: 1em 0; display:block; overflow-x:auto; }
+th, td { border: 1px solid var(--line); padding: 6px 12px; }
+th { background: var(--code); }
+pre { background: var(--code); padding: 12px; overflow-x: auto; border-radius: 6px; }
+code { background: var(--code); padding: 1px 4px; border-radius: 4px; font-size: .92em; }
+pre code { padding: 0; }
+blockquote { margin: 1em 0; padding: 0 1em; color: var(--muted); border-left: 4px solid var(--line); }
+</style>
+</head>
+<body>
+<main>
+<p class="meta"><a href="../index.html">Qiming Bao</a> · Blog · 4 November 2026</p>
+<h1>Where does a 3.8B reasoning model break? Testing Phi-4-mini-reasoning on deduction and abduction</h1>
+<p>Small reasoning models are usually judged on math benchmarks. I wanted to know how Microsoft's <strong>Phi-4-mini-reasoning</strong> (3.8B parameters) handles plain <em>logical</em> reasoning: following rules to a conclusion (deduction), and working backwards from an observation to its cause (abduction). I also wanted to see how it compares with its non-reasoning sibling, <strong>Phi-4-mini-instruct</strong>.</p>
+<p>Short version: the reasoning model is far better at abduction (+24 points). On deduction, it is near chance as soon as the rules contain negation. And the length of its thinking turns out to be a useful warning sign.</p>
+<p>The full sample, including code, notebook and results, is open as a contribution to Microsoft's PhiCookBook: <a href="https://github.com/microsoft/PhiCookBook/pull/604">microsoft/PhiCookBook#604</a>.</p>
+<h2>The setup</h2>
+<p>I used two synthetic benchmarks that my colleagues and I built during my PhD at the University of Auckland. Both are MIT-licensed and have unambiguous answers:</p>
+<ul>
+<li><strong>PARARULE-Plus (deduction).</strong> A set of facts and rules, then a statement. Is it True or False? Items need 2 to 5 rule applications, and about half use negated conditions (<code>If someone is not big then they are poor</code>), read under the closed-world assumption: anything not stated or derivable is false.</li>
+<li><strong>AbductionRules (abduction).</strong> Facts, rules, and an observation that does <em>not</em> follow. Which single missing fact would explain it? I used the <em>Simple</em> split, where exactly one fact works, so answers can be scored by exact match.</li>
+</ul>
+<p>I evaluated 400 items: 200 deductive, balanced across depths and labels, and 200 abductive. Both models were served with vLLM on one A100. The reasoning model used the sampling settings from its model card (temperature 0.8, top-p 0.95) and was run three times. The instruct model used greedy decoding. The harness talks to any OpenAI-compatible endpoint, so the same code works with Foundry Local, Ollama, GitHub Models or a Microsoft Foundry deployment.</p>
+<h2>Results</h2>
+<table>
+<thead>
+<tr>
+<th></th>
+<th style="text-align: right;">Phi-4-mini-reasoning</th>
+<th style="text-align: right;">Phi-4-mini-instruct</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Abduction</td>
+<td style="text-align: right;"><strong>88.2 ± 3.3</strong></td>
+<td style="text-align: right;">64.0</td>
+</tr>
+<tr>
+<td>Deduction</td>
+<td style="text-align: right;">74.0 ± 2.8</td>
+<td style="text-align: right;"><strong>78.5</strong></td>
+</tr>
+<tr>
+<td>Deduction, rules <em>with</em> negation</td>
+<td style="text-align: right;"><strong>56.3 ± 3.8</strong></td>
+<td style="text-align: right;">64.5</td>
+</tr>
+<tr>
+<td>Deduction, rules <em>without</em> negation</td>
+<td style="text-align: right;">89.4 ± 1.9</td>
+<td style="text-align: right;">90.7</td>
+</tr>
+</tbody>
+</table>
+<p><em>Accuracy (%) over 400 items. Reasoning model: mean ± std over 3 runs. Instruct model: 1 greedy run.</em></p>
+<h3>1. Abduction is where reasoning training pays off</h3>
+<p>The instruct model's typical failure is not a wrong guess. It <strong>rejects the premise</strong>. In 52 of 200 cases it said the observation already follows and answered <code>Missing fact: None</code>:</p>
+<blockquote>
+<p><em>"…the observation 'Dave is strong' is already consistent with the given facts and rules. Therefore, there is no missing fact needed… Missing fact: None."</em></p>
+</blockquote>
+<p>The gold answer was <code>Dave is heavy.</code> Phi-4-mini-reasoning almost never does this: it searches the rules for the one that produces the observation and works out which premise is missing.</p>
+<h3>2. Negation is the weak spot</h3>
+<p>Without negation, both models reach about 90%. With negated conditions, Phi-4-mini-reasoning drops to <strong>56%</strong>, close to a coin flip. The instruct model also drops, but less, to 65%.</p>
+<p>Reading the traces, the reasoning model mixes two worlds. It knows the closed-world rule, because it is in the prompt, but within the same chain it also reasons as if unknown facts were merely uncertain ("the cat <em>might</em> be not powerful"). A condition like <code>not powerful</code> is then neither confirmed nor refuted, and the chain derails.</p>
+<p>If you build on small reasoning models for rule-following tasks, such as eligibility checks, policy logic or document validation, <strong>test negation separately</strong>. An aggregate accuracy number hides this failure.</p>
+<h3>3. Long thinking is a warning sign</h3>
+<p>Across the three runs, wrong answers used far more tokens than correct ones:</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th style="text-align: right;">Correct (median)</th>
+<th style="text-align: right;">Wrong (median)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Deduction</td>
+<td style="text-align: right;">1,516 tokens</td>
+<td style="text-align: right;">3,912 tokens</td>
+</tr>
+<tr>
+<td>Abduction</td>
+<td style="text-align: right;">1,667 tokens</td>
+<td style="text-align: right;">7,076 tokens</td>
+</tr>
+</tbody>
+</table>
+<p>That is 2.6× to 4.2× more thinking when the model is about to be wrong. You get this signal for free from the API's usage field. Long traces are good candidates for a retry, a second model, or a human check.</p>
+<h3>4. Parse defensively</h3>
+<p>Two practical gotchas came up:</p>
+<ul>
+<li><strong>Malformed closing tags.</strong> In 2–5% of responses, the model closed its reasoning with a broken tag such as <code>&lt;/roll</code>, then gave a normal <code>Final answer:</code> line. A parser that relies on a well-formed <code>&lt;/think&gt;</code> silently throws those answers away. In my first draft, this cost about 7 points of accuracy that the model had actually earned.</li>
+<li><strong>Backends differ.</strong> Some servers return the opening <code>&lt;think&gt;</code> tag and others put it in the prompt. Read the <em>last</em> answer line, and decide truncation from <code>finish_reason</code>, not from the tags.</li>
+</ul>
+<h2>Try it yourself</h2>
+<p>The sample ships as a notebook plus a small Python module:</p>
+<pre><code class="language-bash">pip install openai pandas
+vllm serve microsoft/Phi-4-mini-reasoning --max-model-len 16384 --served-model-name phi-4-mini-reasoning
+python reasoning_eval.py --model phi-4-mini-reasoning --base-url http://localhost:8000/v1 \
+    --temperature 0.8 --top-p 0.95 --max-tokens 12288
+</code></pre>
+<p>Swap the endpoint for Foundry Local or Ollama to run on a laptop, or point it at your own fine-tuned checkpoint to see whether fine-tuning fixes the negation gap.</p>
+<h2>Caveats</h2>
+<p>These are synthetic, rule-based datasets. They test rule following, not world knowledge, so don't read the scores as general reasoning ability. The samples are small (50 per depth), so differences of a few points are noise. All results come from a single prompt template, and how the closed-world assumption is explained in the prompt likely matters.</p>
+<hr />
+<p><em>Qiming Bao is an AI Research Scientist at Xtracta in Auckland, working on LLM reasoning, multimodal document AI and agentic systems. He received his PhD from the University of Auckland's Strong AI Lab, where PARARULE-Plus and AbductionRules were built, and is a co-author of the frontier benchmarks <a href="https://arxiv.org/abs/2501.14249">Humanity's Last Exam</a> and <a href="https://arxiv.org/abs/2606.05405">Agents' Last Exam</a>.</em></p>
+</main>
+</body>
+</html>
