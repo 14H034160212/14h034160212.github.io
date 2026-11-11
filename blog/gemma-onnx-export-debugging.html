@@ -6,6 +6,8 @@
 <title>Three bugs behind one garbage-output report: debugging Gemma exports in ONNX Runtime GenAI | Qiming Bao</title>
 <meta name="description" content="How a token-by-token comparison against transformers found three bugs in the ONNX Runtime GenAI model builder for Gemma: local layers inheriting global RoPE scaling, an RMSNorm offset added in bfloat16, and a rounded embedding scale.">
 <link rel="canonical" href="https://14h034160212.github.io/blog/gemma-onnx-export-debugging.html">
+<link rel="alternate" hreflang="en" href="https://14h034160212.github.io/blog/gemma-onnx-export-debugging.html">
+<link rel="alternate" hreflang="zh-CN" href="https://14h034160212.github.io/blog/gemma-onnx-export-debugging-zh.html">
 <link rel="icon" type="image/jpeg" href="../qiming.jpg">
 <style>
 :root { --fg:#1f2328; --muted:#59636e; --bg:#ffffff; --code:#f6f8fa; --line:#d1d9e0; --link:#0969da; }
@@ -27,7 +29,7 @@ blockquote { margin: 1em 0; padding: 0 1em; color: var(--muted); border-left: 4p
 </head>
 <body>
 <main>
-<p class="meta"><a href="../index.html">Qiming Bao</a> · Blog · 11 November 2026</p>
+<p class="meta"><a href="../index.html">Qiming Bao</a> · Blog · 11 November 2026 · English / <a href="gemma-onnx-export-debugging-zh.html">中文</a></p>
 <h1>Three bugs behind one garbage-output report: debugging Gemma exports in ONNX Runtime GenAI</h1>
 <p>A Gemma 3 4B model exported with the ONNX Runtime GenAI model builder answered a Persian question with an empty string, while the same checkpoint in transformers answered correctly. That report, <a href="https://github.com/microsoft/onnxruntime-genai/issues/2277">microsoft/onnxruntime-genai#2277</a>, had been open since July. Chasing it led to three separate builder bugs, and the method that found them is worth more than any one fix.</p>
 <p>This post walks through that method: a token-for-token comparison against transformers, a controlled experiment that proves a root cause, and a check that tells a real numerical bug from a model that is merely sensitive. Every number below comes from fp32 CPU builds and greedy decoding.</p>

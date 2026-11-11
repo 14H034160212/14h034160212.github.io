@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>一个“乱码”报告背后的三个 bug：排查 Gemma 在 ONNX Runtime GenAI 中的导出问题 | 包启明</title>
+<meta name="description" content="通过和 transformers 逐 token 对比，在 ONNX Runtime GenAI 的 model builder 里找到 Gemma 的三个 bug：局部层继承了全局 RoPE 缩放、RMSNorm 偏移在 bfloat16 下计算、嵌入缩放被四舍五入。">
+<link rel="canonical" href="https://14h034160212.github.io/blog/gemma-onnx-export-debugging-zh.html">
+<link rel="alternate" hreflang="en" href="https://14h034160212.github.io/blog/gemma-onnx-export-debugging.html">
+<link rel="alternate" hreflang="zh-CN" href="https://14h034160212.github.io/blog/gemma-onnx-export-debugging-zh.html">
+<link rel="icon" type="image/jpeg" href="../qiming.jpg">
+<style>
+:root { --fg:#1f2328; --muted:#59636e; --bg:#ffffff; --code:#f6f8fa; --line:#d1d9e0; --link:#0969da; }
+@media (prefers-color-scheme: dark) { :root { --fg:#e6edf3; --muted:#9198a1; --bg:#0d1117; --code:#161b22; --line:#3d444d; --link:#4493f8; } }
+body { font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial, sans-serif; color:var(--fg); background:var(--bg); margin:0; line-height:1.75; }
+main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: 1.9rem; line-height:1.3; margin: 0.4em 0 0.2em; }
+h2 { margin-top: 2em; border-bottom:1px solid var(--line); padding-bottom:.2em; }
+a { color: var(--link); }
+.meta { color: var(--muted); font-size: .92rem; }
+table { border-collapse: collapse; margin: 1em 0; display:block; overflow-x:auto; }
+th, td { border: 1px solid var(--line); padding: 6px 12px; }
+th { background: var(--code); }
+pre { background: var(--code); padding: 12px; overflow-x: auto; border-radius: 6px; }
+code { background: var(--code); padding: 1px 4px; border-radius: 4px; font-size: .92em; }
+pre code { padding: 0; }
+blockquote { margin: 1em 0; padding: 0 1em; color: var(--muted); border-left: 4px solid var(--line); }
+</style>
+</head>
+<body>
+<main>
+<p class="meta"><a href="../index.html">Qiming Bao</a> · Blog · 2026 年 11 月 11 日 · <a href="gemma-onnx-export-debugging.html">English</a> / 中文</p>
+<h1>一个“乱码”报告背后的三个 bug：排查 Gemma 在 ONNX Runtime GenAI 中的导出问题</h1>
+<p>用 ONNX Runtime GenAI 的 model builder 导出 Gemma 3 4B 之后，问它一个波斯语问题，它回答的是空字符串；同一个 checkpoint 放在 transformers 里却回答得好好的。这个问题（<a href="https://github.com/microsoft/onnxruntime-genai/issues/2277">microsoft/onnxruntime-genai#2277</a>）从今年 7 月起一直没人解决。顺着它查下去，我在 builder 里找到了三个独立的 bug。比起具体的修复，找到它们的方法更值得分享。</p>
+<p>这篇文章讲三件事：怎么和 transformers 逐 token 对比；怎么用一个对照实验证明根因；以及怎么区分“真的有数值 bug”和“模型本身对数值敏感”。下文所有数字都来自 CPU 上的 fp32 构建和贪心解码。</p>
+
+<h2>测试方法：和 transformers 逐 token 对比</h2>
+<p>参考结果是同一个 checkpoint 在 transformers 里的输出，用 fp32 和 eager 注意力。对每条提示词，先记下 transformers 的贪心生成结果和每一步的 logits，再用 onnxruntime-genai 的 <code>Generator</code> 跑导出的模型，两边对比。</p>
+<p>每条提示词看两个指标：</p>
+<ul>
+<li><strong>logits 的最大绝对差值</strong>：第一个生成 token 的，以及在两边生成结果还一致的每一步。</li>
+<li><strong>贪心生成的 20 个新 token 是否完全一致</strong>。</li>
+</ul>
+<p>五条提示词直接取自 issue：普通英文、一句生僻词很多的英文、中英混合，以及两句波斯语。所有提示词都套用 chat template，因为大家实际就是这么用的。</p>
+<p>有两个细节让我踩了坑：</p>
+<ol>
+<li><strong>generation config。</strong>即使传了 <code>do_sample=False</code>，<code>generate()</code> 仍然会套用 checkpoint 自带的 <code>repetition_penalty</code>。Qwen2.5 把它设成了 1.1，结果一个正确的导出看起来像是错的。生成参考结果时要显式传 <code>repetition_penalty=1.0</code>。</li>
+<li><strong>KV cache 容量。</strong>如果 <code>max_length</code> 小于模型的滑动窗口（Gemma 3 1B 是 512，Gemma 2 是 4096），genai 运行时会直接报错。要把它设得远大于窗口。</li>
+</ol>
+
+<h2>Bug 1：局部层继承了全局层的 RoPE 缩放</h2>
+<p>Gemma 3 每 6 层里有 5 层是滑动窗口（局部）注意力，1 层是全局注意力。在 4B、12B 和 27B 里，只有全局层用了 factor 为 8 的线性 RoPE 缩放，局部层用的是普通 RoPE。builder 在构建全局层的 cos/sin cache 时设了 <code>rescale_factors = 8</code>，接着构建局部层的 cache 时却没有把它改回来。于是每 6 层里有 5 层的旋转频率只有正确值的 1/8，而且从第 0 层就开始了，这正好是 issue 报告人追到分歧的地方。</p>
+<p>Gemma 3 1B 没有 RoPE 缩放，所以从来没受影响。而在 transformers 5 下，builder 根本走不到这一步：新的嵌套 <code>rope_parameters</code> 格式会让所有尺寸的 Gemma 3 都报 <code>KeyError: 'rope_type'</code>。</p>
+<p>“看起来合理”的原因不等于已经证明的原因。为了证明它，我把同一个纯文本 4B checkpoint 用三种方式构建，每次只改一处，分别和 transformers 对比：</p>
+<table>
+<thead>
+<tr><th>同一个 checkpoint 的导出方式</th><th style="text-align: right;">第一个 token 的 logits 最大绝对差</th><th>贪心生成一致</th></tr>
+</thead>
+<tbody>
+<tr><td>builder 0.14.1，和 issue 里一样</td><td style="text-align: right;">26.8 – 41.3</td><td>0/5，两条波斯语都是空输出</td></tr>
+<tr><td>0.14.1，只把局部 cache 的 <code>rescale_factors</code> 改成 1</td><td style="text-align: right;">0.0008 – 0.0023</td><td>5/5</td></tr>
+<tr><td>修复后的 <code>main</code> builder</td><td style="text-align: right;">0.0008 – 0.0023</td><td>5/5</td></tr>
+</tbody>
+</table>
+<p>在 0.14.1 上只打这一行补丁，结果就和 <code>main</code> 完全一样，说明旧 builder 里没有别的因素在起作用。修复是 <a href="https://github.com/microsoft/onnxruntime-genai/pull/2884">#2884</a>：按层类型读取 <code>rope_parameters</code>，构建局部 cache 时不再带上全局缩放。我还用 4 个尺寸真实的 <code>config.json</code>，把 builder 生成的 RoPE cache 和 transformers 的 <code>Gemma3RotaryEmbedding</code> 逐个位置对比（1B 共 32768 个位置，其余各 131072 个），最大差值都是 0。</p>
+
+<h2>Bug 2 和 3：文字是对的，但 logits 偏了 0.1</h2>
+<p>修好 Bug 1 之后，所有 Gemma 导出模型的贪心生成结果都和 transformers 一致了，但 logits 还是对不上。Gemma 2 2B 和 Gemma 3 1B 差了 0.04 到 0.24，Gemma 3 270M 最多差 0.44。而同一套流程里，Qwen3、Granite、LFM2 和 SmolLM2 的误差都在 0.0001 以内。</p>
+<p><strong>是不是模型本身就对数值敏感？</strong>Gemma 以“巨大激活值”出名，所以第一个问题是 transformers 自己会不会波动这么大。答案是不会。Gemma 3 1B 的 fp32 和 fp64 之间只差 6e-5，eager 和 SDPA 注意力之间也只差 6e-5，和 Qwen3 一样。导出模型的误差比模型自身的噪声大了三个数量级。</p>
+<p><strong>误差从哪里开始？</strong>我把 1B 模型截断成 1 层、2 层和 6 层，transformers 和 builder 都用截断后的配置，再对比一次。只有 1 层时误差就已经是 0.034 了，所以问题在单层内部，不是层与层之间累积出来的。</p>
+<p><strong>和之前有什么不同？</strong>Bug 1 用的 4B checkpoint 是我自己存成 fp32 的，结果很准；而 Hub 上 1B 和 Gemma 2 的 checkpoint 是 bfloat16。把 1B 的权重先转成 fp32 再导出，误差就降到了 0.0005 到 0.0016。顺着这个线索找到了两处问题：</p>
+<ul>
+<li><strong>Bug 2：RMSNorm 的偏移是在 bfloat16 下加的。</strong>transformers 5 改成按 checkpoint 自身的 dtype 加载权重，而 transformers 4 默认加载成 fp32。Gemma 的 RMSNorm 乘的是 <code>1 + weight</code>，builder 直接在 bfloat16 张量上算这个和，结果先被舍入到 8 位有效位，再写进 fp32 模型。修法是先转成 fp32 再加偏移。</li>
+<li><strong>Bug 3：嵌入缩放被四舍五入了。</strong>builder 用的是 <code>round(sqrt(hidden_size), 2)</code>，比如 Gemma 3 1B 用的是 33.94，精确值是 33.941。transformers 用的是精确值。Gemma 2 2B 不受影响，因为 sqrt(2304) 正好等于 48。</li>
+</ul>
+<p>两处都修好后，直接从 Hub 上原版的 bfloat16 checkpoint 导出：</p>
+<table>
+<thead>
+<tr><th>模型</th><th style="text-align: right;"><code>main</code> 上的 logits 误差</th><th style="text-align: right;">修复后</th><th>贪心生成一致</th></tr>
+</thead>
+<tbody>
+<tr><td>Gemma 2 2B</td><td style="text-align: right;">0.044 – 0.112</td><td style="text-align: right;">0.00003 – 0.00007</td><td>4/5 → 5/5</td></tr>
+<tr><td>Gemma 3 1B</td><td style="text-align: right;">0.087 – 0.243</td><td style="text-align: right;">0.00005 – 0.00012</td><td>5/5</td></tr>
+<tr><td>Gemma 3 270M</td><td style="text-align: right;">0.119 – 0.442</td><td style="text-align: right;">0.00007 – 0.00027</td><td>5/5</td></tr>
+</tbody>
+</table>
+<p>所有把 norm 权重加 1 的模型都走同一段加偏移的代码，所以这个修改也会作用到 Nemotron 上，但我没有实际测过 Nemotron。另外有一个单元测试专门检查 fp16 导出里 Gemma 的 q/k norm。</p>
+
+<h2>做模型导出验证的几点经验</h2>
+<ol>
+<li><strong>要比 logits，不能只比生成的文字。</strong>Bug 2 和 3 在我的提示词上一个贪心 token 都没改变，只有 logits 能暴露它们。而它们会影响采样输出和长文本生成。</li>
+<li><strong>先量一下参考结果自己的噪声。</strong>fp32 对 fp64、eager 对 SDPA，能告诉你对这个模型来说多大的误差算“接近”。不先量，0.1 的误差很容易被当成“Gemma 就是这样”而放过。</li>
+<li><strong>用一处改动证明根因。</strong>只在出问题的版本上打你怀疑的那个补丁，看它能不能达到正确的数字。这次就是靠它排除了 0.14.1 和 <code>main</code> 之间的所有其他差异。</li>
+<li><strong>按层数二分。</strong>在参考实现和导出模型里同时截断 <code>num_hidden_layers</code>，就能判断误差来自单层内部，还是在很多层之间累积。</li>
+<li><strong>测大家真正会下载的 checkpoint。</strong>一个 fp32 的测试 checkpoint 把 bfloat16 的 bug 完全掩盖了，而 Hub 上的 checkpoint 就是 bfloat16。</li>
+<li><strong>留意悄悄变化的默认值。</strong>一次依赖升级（transformers 4 到 5）改变了加载的 dtype，一个 <code>generation_config</code> 加上了重复惩罚，两者都没有报任何错。</li>
+</ol>
+
+<h2>修复状态</h2>
+<p>RoPE 的修复已经合并，精度修复还在审查中。在它合并之前，先把 checkpoint 转成 fp32 再导出，就能避开偏移的误差。</p>
+<table>
+<thead>
+<tr><th>编号</th><th>内容</th><th>状态（2026 年 11 月 11 日）</th></tr>
+</thead>
+<tbody>
+<tr><td><a href="https://github.com/microsoft/onnxruntime-genai/pull/2884">#2884</a></td><td>Gemma 3 RoPE：支持 transformers 5 的参数格式，局部 cache 不再带缩放</td><td>已合并</td></tr>
+<tr><td><a href="https://github.com/microsoft/onnxruntime-genai/issues/2277">#2277</a></td><td>Gemma 3 4B 输出乱码</td><td>根因已由 #2884 修复，验证结果已发布</td></tr>
+<tr><td><a href="https://github.com/microsoft/onnxruntime-genai/pull/2939">#2939</a></td><td>Gemma RMSNorm 偏移改在 fp32 下计算，嵌入缩放用精确值</td><td>审查中</td></tr>
+<tr><td><a href="https://github.com/microsoft/onnxruntime-genai/issues/2938">#2938</a></td><td>SmolLM3 导出崩溃（用同一套对比流程发现）</td><td>已报告</td></tr>
+</tbody>
+</table>
+<p>这套对比流程用不到一百行 Python，只依赖 transformers 和 onnxruntime-genai。如果你在维护某个模型家族的导出流程，用同样的五条提示词和 transformers 对比一下，是成本很低的第一道检查。</p>
+<p><em>排查这些 bug 和撰写本文时，我使用了 Claude（Anthropic）辅助。所有结果都经过我本人审阅，各项检查也由我亲自运行。</em></p>
+<hr />
+<p><em>包启明，现居新西兰奥克兰的 AI 研究者，研究方向为大模型推理与模型部署。博士毕业于奥克兰大学 Strong AI Lab，参与 PyTorch ONNX 导出器、ONNX Runtime GenAI 和 Microsoft PyRIT 等开源项目的贡献。</em></p>
+</main>
+</body>
+</html>
