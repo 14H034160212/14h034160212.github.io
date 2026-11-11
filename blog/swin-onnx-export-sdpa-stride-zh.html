@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Swin 和 BEiT 为什么导不出 ONNX：同一个张量，两种注意力内核 | 包启明</title>
+<meta name="description" content="追查 Hugging Face Swin 和 BEiT 用 torch.onnx dynamo 导出失败的原因：attention mask 需要梯度时，CPU 上的 scaled_dot_product_attention 会换一个内核，输出的内存布局也随之改变。">
+<link rel="canonical" href="https://14h034160212.github.io/blog/swin-onnx-export-sdpa-stride-zh.html">
+<link rel="alternate" hreflang="en" href="https://14h034160212.github.io/blog/swin-onnx-export-sdpa-stride.html">
+<link rel="alternate" hreflang="zh-CN" href="https://14h034160212.github.io/blog/swin-onnx-export-sdpa-stride-zh.html">
+<link rel="icon" type="image/jpeg" href="../qiming.jpg">
+<style>
+:root { --fg:#1f2328; --muted:#59636e; --bg:#ffffff; --code:#f6f8fa; --line:#d1d9e0; --link:#0969da; }
+@media (prefers-color-scheme: dark) { :root { --fg:#e6edf3; --muted:#9198a1; --bg:#0d1117; --code:#161b22; --line:#3d444d; --link:#4493f8; } }
+body { font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial, sans-serif; color:var(--fg); background:var(--bg); margin:0; line-height:1.75; }
+main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: 1.9rem; line-height:1.3; margin: 0.4em 0 0.2em; }
+h2 { margin-top: 2em; border-bottom:1px solid var(--line); padding-bottom:.2em; }
+a { color: var(--link); }
+.meta { color: var(--muted); font-size: .92rem; }
+table { border-collapse: collapse; margin: 1em 0; display:block; overflow-x:auto; }
+th, td { border: 1px solid var(--line); padding: 6px 12px; }
+th { background: var(--code); }
+pre { background: var(--code); padding: 12px; overflow-x: auto; border-radius: 6px; }
+code { background: var(--code); padding: 1px 4px; border-radius: 4px; font-size: .92em; }
+pre code { padding: 0; }
+blockquote { margin: 1em 0; padding: 0 1em; color: var(--muted); border-left: 4px solid var(--line); }
+</style>
+</head>
+<body>
+<main>
+<p class="meta"><a href="../index.html">Qiming Bao</a> · Blog · 2026 年 11 月 11 日 · <a href="swin-onnx-export-sdpa-stride.html">English</a> / 中文</p>
+<h1>Swin 和 BEiT 为什么导不出 ONNX：同一个张量，两种注意力内核</h1>
+<p>Hugging Face 的 Swin（<code>microsoft/swin-tiny-patch4-window7-224</code>）和 BEiT（<code>microsoft/beit-base-patch16-224</code>）在使用默认的 SDPA 注意力时，用 <code>torch.onnx.export(..., dynamo=True)</code> 导出会失败，报错指向一个看起来毫无问题的 <code>reshape</code>。根本原因是：CPU 上的 <code>scaled_dot_product_attention</code> 会根据 attention mask 是否需要梯度，选择不同的内核，而不同内核输出的内存布局不一样。我把它报告成了 <a href="https://github.com/pytorch/pytorch/issues/204360">pytorch/pytorch#204360</a>，并给出了一行的修复。</p>
+<p>这个 bug 是我在批量导出 40 多个 Hugging Face 模型、逐个和 PyTorch 对比时发现的。所有语言模型都通过了，其中 10 个还测了动态形状。Swin 和 BEiT 是仅有的两个由 ONNX 导出器本身导致的失败。</p>
+
+<h2>现象</h2>
+<pre><code>ConversionError: Failed to decompose the FX graph for ONNX compatibility. This is step 2/3 ...
+ValueError: Cannot view a tensor with shape torch.Size([64, 49, 3, 32]) and strides (4704, 32, 1568, 1)
+as a tensor with shape (64, 49, 96)!
+While executing %view_9 = aten.view.default(%transpose_5, [64, 49, -1])
+</code></pre>
+<p>模型代码里写的是 <code>attn_output.reshape(*input_shape, -1)</code>。对非连续张量做 <code>reshape</code> 是合法的，它会自动复制一份。但在导出流程的某个环节，它被换成了 <code>view</code>，而 <code>view</code> 只有在内存布局允许时才合法。</p>
+<p>两个简单的检查缩小了范围：改用 <code>attn_implementation="eager"</code> 就能正常导出，说明问题和 SDPA 有关；单独跑 <code>torch.export.export(...).run_decompositions()</code> 也没问题，说明问题出在 ONNX 导出器分解之后的步骤里。</p>
+
+<h2>找到第一个出错的节点</h2>
+<p>导出器先对图做分解，然后跑一个类型提升（type promotion）的 pass，这个 pass 会用 FakeTensor 把整张图重新执行一遍。我自己写了一个小的 <code>torch.fx.Interpreter</code>，把分解后的图重新执行，逐个节点比对实际输出的 stride 和 <code>node.meta["val"]</code> 里记录的 stride，在第一个不一致的地方停下：</p>
+<table>
+<thead><tr><th>阶段</th><th>SDPA 输出的 stride，形状 (64, 3, 49, 32)</th><th><code>transpose(1, 2)</code> 之后</th></tr></thead>
+<tbody>
+<tr><td><code>torch.export</code> 追踪时</td><td>(4704, 1568, 32, 1)</td><td>非连续：保持 <code>reshape</code></td></tr>
+<tr><td>ONNX 导出器分解时</td><td>(4704, 32, 96, 1)</td><td>看起来连续：被降成 <code>view</code></td></tr>
+<tr><td>类型提升重新执行时</td><td>(4704, 1568, 32, 1)</td><td>非连续：<code>view</code> 报错</td></tr>
+</tbody>
+</table>
+<p>第一个不一致的节点就是 SDPA 本身，而且输入完全相同。因为 torchlib 实现了 <code>aten.scaled_dot_product_attention</code>，导出器在分解时会保留这个高层算子。分解时记录的输出是 CPU flash 内核的布局；类型提升 pass 重新执行它时，得到的却是 math 内核的布局。</p>
+
+<h2>是什么让内核变了</h2>
+<p>找触发条件最快的办法，是在一个最小模块上列一张对照表。这个模块只有三个 <code>Linear</code> 投影、一个带 mask 的 SDPA，再接 <code>transpose(1, 2).reshape(B, S, -1)</code>：</p>
+<table>
+<thead><tr><th><code>attn_mask</code> 的来源</th><th>导出</th></tr></thead>
+<tbody>
+<tr><td>参数本身，直接使用</td><td>成功</td></tr>
+<tr><td>参数经过一个运算（<code>p.unsqueeze(0)</code>、<code>p + 0</code>）</td><td><strong>失败</strong></td></tr>
+<tr><td>buffer 经过一个运算</td><td>成功</td></tr>
+<tr><td>图的输入，经过或不经过运算</td><td>成功</td></tr>
+</tbody>
+</table>
+<p>参数和 buffer 的区别就在于 <code>requires_grad</code>。mask 需要梯度时，CPU 上的 SDPA 会退回 math 内核。类型提升 pass 重新执行时用的是占位符的 FakeTensor，参数在那里仍然是 <code>requires_grad=True</code>，所以由参数算出来的 mask 也需要梯度，内核就换了。Swin 和 BEiT 都会把相对位置偏置（一个参数）变成 attention mask。</p>
+<pre><code class="language-python">import torch
+
+class M(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.q = torch.nn.Linear(96, 96)
+        self.k = torch.nn.Linear(96, 96)
+        self.v = torch.nn.Linear(96, 96)
+        self.bias = torch.nn.Parameter(torch.randn(3, 49, 49))  # 比如相对位置偏置
+
+    def forward(self, x):
+        B, S, _ = x.shape
+        q = self.q(x).view(B, S, 3, 32).transpose(1, 2)
+        k = self.k(x).view(B, S, 3, 32).transpose(1, 2)
+        v = self.v(x).view(B, S, 3, 32).transpose(1, 2)
+        out = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=self.bias.unsqueeze(0))
+        return out.transpose(1, 2).reshape(B, S, -1)
+
+torch.onnx.export(M().eval(), (torch.randn(64, 49, 96),), dynamo=True)  # 失败
+</code></pre>
+
+<h2>我第一次给出的修复是错的</h2>
+<p>我最初的补丁是用 <code>torch.no_grad()</code> 包住类型提升的重新执行。打上之后 Swin 就能导出了，我差点就把它写进 issue。后来拿最小模块核对这个说法，发现它还是失败。原因是 PyTorch 的一个细节：在 <code>no_grad</code> 下，对需要梯度的张量做 view 类操作（比如 <code>unsqueeze</code>），结果仍然是 <code>requires_grad=True</code>。Swin 的 mask 是先从偏置表里按下标取值得到的，这一步在 <code>no_grad</code> 下会产生一个不需要梯度的新张量，所以 <code>no_grad</code> 在 Swin 上碰巧有效。</p>
+<p>真正有效的修法是：重新执行之前先把 FakeTensor 参数 <code>detach()</code>，让它和分解时一样看到 <code>requires_grad=False</code> 的输入：</p>
+<pre><code class="language-python"># torch/onnx/_internal/fx/passes/type_promotion.py，InsertTypePromotion._run
+with fake_mode, dispatcher_mode, fx_traceback.preserve_node_meta():
+    fake_args = [arg.detach() if isinstance(arg, torch.Tensor) else arg for arg in fake_args]
+    self.interpreter.run(*fake_args)
+</code></pre>
+<p>打上这个补丁后，最小模块、Swin 和 BEiT 都能导出。在 ONNX Runtime 上，Swin 和 eager 的误差在 8.7e-6 以内，BEiT 的相对误差在 3.3e-6 以内。我在本地能跑的 ONNX 导出器测试，打补丁前后结果完全一样。在修复合并之前，导出前先调用 <code>model.requires_grad_(False)</code> 就能绕开这个问题。</p>
+
+<h2>几点经验</h2>
+<ol>
+<li><strong>用机械的方法找第一个分歧点。</strong>把图重新执行一遍、逐个节点比对元数据和实际输出，直接定位到了 SDPA 节点。在此之前，我对分解表和 opset 版本做了好几个错误的猜测。</li>
+<li><strong>用对照表二分触发条件。</strong>每次只改 mask 的一个属性（参数、buffer、输入、是否经过 view），就把“Swin 上会失败”变成了一个精确的条件。</li>
+<li><strong>每个结论都要拿最小复现来核对。</strong>一个在原始模型上有效的修复，仍然可能是错的。我的第一个补丁就是这样。</li>
+<li><strong>一次追踪记录下的元数据，是对下一次执行的承诺。</strong>当某个 pass 根据记录的 stride 把 <code>reshape</code> 降成 <code>view</code> 时，后面每一次重新执行都必须精确地复现这些 stride。</li>
+</ol>
+<p>完整的分析和 BEiT 的确认都在 <a href="https://github.com/pytorch/pytorch/issues/204360">pytorch/pytorch#204360</a> 里。PyTorch 的分类机器人已经给它打上了 <code>module: onnx</code>、<code>module: sdpa</code>、<code>has workaround</code> 和 <code>release triage</code> 标签。</p>
+<p><em>排查这个 bug 和撰写本文时，我使用了 Claude（Anthropic）辅助。所有结果都经过我本人审阅，各项检查也由我亲自运行。</em></p>
+<hr />
+<p><em>包启明，现居新西兰奥克兰的 AI 研究者，研究方向为大模型推理与模型部署。博士毕业于奥克兰大学 Strong AI Lab，参与 PyTorch ONNX 导出器、ONNX Runtime GenAI 和 Microsoft PyRIT 等开源项目的贡献。</em></p>
+</main>
+</body>
+</html>

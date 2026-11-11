@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Why Swin and BEiT fail to export to ONNX: one tensor, two attention kernels | Qiming Bao</title>
+<meta name="description" content="Tracing a torch.onnx dynamo export failure in Hugging Face Swin and BEiT to a stride mismatch: CPU scaled_dot_product_attention picks a different kernel when the attention mask requires grad.">
+<link rel="canonical" href="https://14h034160212.github.io/blog/swin-onnx-export-sdpa-stride.html">
+<link rel="alternate" hreflang="en" href="https://14h034160212.github.io/blog/swin-onnx-export-sdpa-stride.html">
+<link rel="alternate" hreflang="zh-CN" href="https://14h034160212.github.io/blog/swin-onnx-export-sdpa-stride-zh.html">
+<link rel="icon" type="image/jpeg" href="../qiming.jpg">
+<style>
+:root { --fg:#1f2328; --muted:#59636e; --bg:#ffffff; --code:#f6f8fa; --line:#d1d9e0; --link:#0969da; }
+@media (prefers-color-scheme: dark) { :root { --fg:#e6edf3; --muted:#9198a1; --bg:#0d1117; --code:#161b22; --line:#3d444d; --link:#4493f8; } }
+body { font-family: -apple-system, "Segoe UI", Arial, sans-serif; color:var(--fg); background:var(--bg); margin:0; line-height:1.65; }
+main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: 1.9rem; line-height:1.25; margin: 0.4em 0 0.2em; }
+h2 { margin-top: 2em; border-bottom:1px solid var(--line); padding-bottom:.2em; }
+a { color: var(--link); }
+.meta { color: var(--muted); font-size: .92rem; }
+table { border-collapse: collapse; margin: 1em 0; display:block; overflow-x:auto; }
+th, td { border: 1px solid var(--line); padding: 6px 12px; }
+th { background: var(--code); }
+pre { background: var(--code); padding: 12px; overflow-x: auto; border-radius: 6px; }
+code { background: var(--code); padding: 1px 4px; border-radius: 4px; font-size: .92em; }
+pre code { padding: 0; }
+blockquote { margin: 1em 0; padding: 0 1em; color: var(--muted); border-left: 4px solid var(--line); }
+</style>
+</head>
+<body>
+<main>
+<p class="meta"><a href="../index.html">Qiming Bao</a> · Blog · 11 November 2026 · English / <a href="swin-onnx-export-sdpa-stride-zh.html">中文</a></p>
+<h1>Why Swin and BEiT fail to export to ONNX: one tensor, two attention kernels</h1>
+<p>Hugging Face Swin (<code>microsoft/swin-tiny-patch4-window7-224</code>) and BEiT (<code>microsoft/beit-base-patch16-224</code>) cannot be exported with <code>torch.onnx.export(..., dynamo=True)</code> when they use their default SDPA attention. The export stops with an error that points at an innocent <code>reshape</code>. The cause is that CPU <code>scaled_dot_product_attention</code> picks a different kernel, with a different output layout, depending on whether the attention mask requires grad. I reported it as <a href="https://github.com/pytorch/pytorch/issues/204360">pytorch/pytorch#204360</a> with a one-line fix.</p>
+<p>I found it while exporting more than 40 Hugging Face models and comparing each against PyTorch. Every language model passed, ten of them also with dynamic shapes. Swin and BEiT were the only failures that came from the ONNX exporter itself.</p>
+
+<h2>The symptom</h2>
+<pre><code>ConversionError: Failed to decompose the FX graph for ONNX compatibility. This is step 2/3 ...
+ValueError: Cannot view a tensor with shape torch.Size([64, 49, 3, 32]) and strides (4704, 32, 1568, 1)
+as a tensor with shape (64, 49, 96)!
+While executing %view_9 = aten.view.default(%transpose_5, [64, 49, -1])
+</code></pre>
+<p>The model code says <code>attn_output.reshape(*input_shape, -1)</code>. A <code>reshape</code> of a non-contiguous tensor is legal: it copies. Somewhere in the export pipeline it had become a <code>view</code>, which is only legal when the memory layout allows it.</p>
+<p>Two quick checks narrowed it down. With <code>attn_implementation="eager"</code> the export works, so SDPA is involved. And <code>torch.export.export(...).run_decompositions()</code> on its own also works, so the problem is in what the ONNX exporter does after decomposition.</p>
+
+<h2>Finding the first wrong node</h2>
+<p>The exporter decomposes the graph, then runs a type-promotion pass that re-executes the whole graph with fake tensors. I re-ran the decomposed graph myself with a small <code>torch.fx.Interpreter</code> that compared each node's output strides with the strides recorded in <code>node.meta["val"]</code>, and stopped at the first mismatch:</p>
+<table>
+<thead><tr><th>Stage</th><th>SDPA output stride, shape (64, 3, 49, 32)</th><th>After <code>transpose(1, 2)</code></th></tr></thead>
+<tbody>
+<tr><td><code>torch.export</code> trace</td><td>(4704, 1568, 32, 1)</td><td>not contiguous: stays <code>reshape</code></td></tr>
+<tr><td>ONNX exporter's decomposition</td><td>(4704, 32, 96, 1)</td><td>contiguous: lowered to <code>view</code></td></tr>
+<tr><td>Type-promotion re-run</td><td>(4704, 1568, 32, 1)</td><td>not contiguous: the <code>view</code> fails</td></tr>
+</tbody>
+</table>
+<p>The first mismatch was the SDPA node itself, with identical inputs. The exporter keeps <code>aten.scaled_dot_product_attention</code> undecomposed because torchlib implements it. During decomposition its recorded output had the CPU flash kernel's layout; when the type-promotion pass re-ran it, it got the math kernel's layout.</p>
+
+<h2>What makes the kernel change</h2>
+<p>The quickest way to find the trigger was a small table of variants on a minimal module: three <code>Linear</code> projections, SDPA with a mask, then <code>transpose(1, 2).reshape(B, S, -1)</code>:</p>
+<table>
+<thead><tr><th><code>attn_mask</code> comes from</th><th>Export</th></tr></thead>
+<tbody>
+<tr><td>a parameter, used directly</td><td>OK</td></tr>
+<tr><td>a parameter through an op (<code>p.unsqueeze(0)</code>, <code>p + 0</code>)</td><td><strong>fails</strong></td></tr>
+<tr><td>a buffer through an op</td><td>OK</td></tr>
+<tr><td>a graph input, with or without an op</td><td>OK</td></tr>
+</tbody>
+</table>
+<p>The difference between a parameter and a buffer is <code>requires_grad</code>. CPU SDPA falls back to the math kernel when the mask requires grad. The type-promotion pass re-runs the graph with the placeholders' fake values, and parameters keep <code>requires_grad=True</code> there, so a mask computed from a parameter requires grad and the kernel switches. Swin and BEiT both turn a relative position bias, which is a parameter, into the attention mask.</p>
+<pre><code class="language-python">import torch
+
+class M(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.q = torch.nn.Linear(96, 96)
+        self.k = torch.nn.Linear(96, 96)
+        self.v = torch.nn.Linear(96, 96)
+        self.bias = torch.nn.Parameter(torch.randn(3, 49, 49))  # e.g. relative position bias
+
+    def forward(self, x):
+        B, S, _ = x.shape
+        q = self.q(x).view(B, S, 3, 32).transpose(1, 2)
+        k = self.k(x).view(B, S, 3, 32).transpose(1, 2)
+        v = self.v(x).view(B, S, 3, 32).transpose(1, 2)
+        out = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=self.bias.unsqueeze(0))
+        return out.transpose(1, 2).reshape(B, S, -1)
+
+torch.onnx.export(M().eval(), (torch.randn(64, 49, 96),), dynamo=True)  # fails
+</code></pre>
+
+<h2>The fix I got wrong first</h2>
+<p>My first patch wrapped the type-promotion re-run in <code>torch.no_grad()</code>. Swin then exported, and I nearly wrote it up. Checking the claim against the minimal module showed it still failed. The reason is a PyTorch detail: under <code>no_grad</code>, a view of a tensor that requires grad, such as <code>unsqueeze</code>, still has <code>requires_grad=True</code>. Swin's mask starts with an indexing lookup into its bias table, which under <code>no_grad</code> produces a new tensor that does not require grad, so <code>no_grad</code> happened to work there.</p>
+<p>The fix that works is to detach the fake arguments before the re-run, so it sees the same <code>requires_grad=False</code> inputs as the decomposition:</p>
+<pre><code class="language-python"># torch/onnx/_internal/fx/passes/type_promotion.py, InsertTypePromotion._run
+with fake_mode, dispatcher_mode, fx_traceback.preserve_node_meta():
+    fake_args = [arg.detach() if isinstance(arg, torch.Tensor) else arg for arg in fake_args]
+    self.interpreter.run(*fake_args)
+</code></pre>
+<p>With it, the minimal module, Swin and BEiT all export. On ONNX Runtime, Swin matches eager within 8.7e-6 and BEiT within 3.3e-6 relative. The ONNX exporter tests I could run locally have the same results with and without the change. Until a fix lands, <code>model.requires_grad_(False)</code> before exporting avoids the problem.</p>
+
+<h2>Lessons</h2>
+<ol>
+<li><strong>Find the first divergence mechanically.</strong> Re-running the graph and comparing each node's metadata with what it actually produces pointed straight at the SDPA node, after several wrong guesses about decompositions and opsets.</li>
+<li><strong>Bisect the trigger with a table of variants.</strong> Changing one property of the mask at a time (parameter, buffer, input, view or not) turned "it fails on Swin" into one precise condition.</li>
+<li><strong>Check every claim against the minimal repro.</strong> A fix that works on the model you started with can still be wrong. My first patch was.</li>
+<li><strong>Metadata from one tracing pass is a promise about the next.</strong> When a pass lowers <code>reshape</code> to <code>view</code> based on recorded strides, every later re-run has to reproduce those strides exactly.</li>
+</ol>
+<p>The issue, <a href="https://github.com/pytorch/pytorch/issues/204360">pytorch/pytorch#204360</a>, has the full analysis and the BEiT confirmation. The PyTorch triage bot labelled it <code>module: onnx</code>, <code>module: sdpa</code>, <code>has workaround</code> and <code>release triage</code>.</p>
+<p><em>I used Claude (Anthropic) to help investigate this bug and draft this post. I reviewed the results and ran the checks myself.</em></p>
+<hr />
+<p><em>Qiming Bao is an AI researcher in Auckland, New Zealand, working on LLM reasoning and model deployment. He received his PhD from the University of Auckland's Strong AI Lab and contributes to the PyTorch ONNX exporter, ONNX Runtime GenAI and Microsoft PyRIT.</em></p>
+</main>
+</body>
+</html>
