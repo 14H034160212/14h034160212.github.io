@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>用差分测试找 ONNX 导出器的 bug：哪些有效，哪些骗了我 | 包启明</title>
+<meta name="description" content="用边界输入对比 torch eager 和 torch.onnx.export + ONNX Runtime，在 onnxscript 的 torchlib 里找到了好几个真 bug。本文介绍测试脚本、发现的问题，以及它产生误报的四种方式。">
+<link rel="canonical" href="https://14h034160212.github.io/blog/onnx-exporter-differential-fuzzing-zh.html">
+<link rel="alternate" hreflang="en" href="https://14h034160212.github.io/blog/onnx-exporter-differential-fuzzing.html">
+<link rel="alternate" hreflang="zh-CN" href="https://14h034160212.github.io/blog/onnx-exporter-differential-fuzzing-zh.html">
+<link rel="icon" type="image/jpeg" href="../qiming.jpg">
+<style>
+:root { --fg:#1f2328; --muted:#59636e; --bg:#ffffff; --code:#f6f8fa; --line:#d1d9e0; --link:#0969da; }
+@media (prefers-color-scheme: dark) { :root { --fg:#e6edf3; --muted:#9198a1; --bg:#0d1117; --code:#161b22; --line:#3d444d; --link:#4493f8; } }
+body { font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial, sans-serif; color:var(--fg); background:var(--bg); margin:0; line-height:1.75; }
+main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: 1.9rem; line-height:1.3; margin: 0.4em 0 0.2em; }
+h2 { margin-top: 2em; border-bottom:1px solid var(--line); padding-bottom:.2em; }
+a { color: var(--link); }
+.meta { color: var(--muted); font-size: .92rem; }
+table { border-collapse: collapse; margin: 1em 0; display:block; overflow-x:auto; }
+th, td { border: 1px solid var(--line); padding: 6px 12px; }
+th { background: var(--code); }
+pre { background: var(--code); padding: 12px; overflow-x: auto; border-radius: 6px; }
+code { background: var(--code); padding: 1px 4px; border-radius: 4px; font-size: .92em; }
+pre code { padding: 0; }
+</style>
+</head>
+<body>
+<main>
+<p class="meta"><a href="../index.html">Qiming Bao</a> · Blog · 2026 年 11 月 11 日 · <a href="onnx-exporter-differential-fuzzing.html">English</a> / 中文</p>
+<h1>用差分测试找 ONNX 导出器的 bug：哪些有效，哪些骗了我</h1>
+<p>PyTorch 的 ONNX 导出器会把每个 ATen 算子交给 onnxscript 的 torchlib 里对应的函数来翻译。这些函数都有单元测试，但测试大多只喂普通的随机浮点数。我想知道在边界情况下会发生什么：NaN、无穷大、带符号的零、整数和布尔输入、float16。于是我写了一个小的差分测试，让每个算子分别在 PyTorch eager 模式下运行，以及经过 <code>torch.onnx.export(dynamo=True)</code> 再用 ONNX Runtime 运行，然后对比两边的结果。</p>
+<p>做了三轮，测了大约 300 个算子和参数的组合，找到了好几个真 bug，其中 4 个我已经提了修复 PR。它也产生了四类误报，而这才是这篇文章更有价值的部分。</p>
+
+<h2>测试脚本</h2>
+<p>每个用例是一个只调用一个算子的小 <code>nn.Module</code>。脚本先用 eager 模式跑一遍，再导出、用 ONNX Runtime 跑导出的模型，然后对比形状、dtype 和数值。浮点数按容差比较，并设置 <code>equal_nan=True</code>；整数和布尔值必须完全一致。</p>
+<pre><code class="language-python">class M(torch.nn.Module):
+    def __init__(self, fn): super().__init__(); self.fn = fn
+    def forward(self, *args): return self.fn(*args)
+
+expected = M(fn)(*inputs)
+program = torch.onnx.export(M(fn), inputs, dynamo=True)
+actual = program(*inputs)            # 在 ONNX Runtime 上运行
+compare(actual, expected)            # 形状、dtype、数值
+</code></pre>
+<p>输入比算子更重要。每个算子都要跑这些输入：包含 NaN、±inf、±0 和极小值的浮点张量，int32、int64 和 uint8 张量，布尔张量，空张量，以及 float16、bfloat16 和 float64。大多数 bug 都出在这样的地方：PyTorch 的算子接受某种 dtype 或特殊值，而对应的 ONNX 算子不接受。</p>
+
+<h2>找到了什么</h2>
+<table>
+<thead><tr><th>问题</th><th>后果</th><th>状态</th></tr></thead>
+<tbody>
+<tr><td><code>ceil</code>、<code>floor</code>、<code>round</code>、<code>trunc</code>、<code>isnan</code>、<code>isfinite</code> 的整数输入</td><td>导出非法的 ONNX 模型</td><td>我的修复：<a href="https://github.com/microsoft/onnxscript/pull/3178">onnxscript#3178</a></td></tr>
+<tr><td>bool 输入的 <code>max(x, dim)</code> 和 <code>min(x, dim)</code></td><td>导出非法的 ONNX 模型</td><td>我的修复：<a href="https://github.com/microsoft/onnxscript/pull/3179">onnxscript#3179</a></td></tr>
+<tr><td><code>heaviside(NaN, v)</code></td><td>返回 1，PyTorch 返回 0</td><td>我的修复：<a href="https://github.com/microsoft/onnxscript/pull/3180">onnxscript#3180</a></td></tr>
+<tr><td>带 <code>dtype=</code> 的 <code>softmax</code>/<code>log_softmax</code></td><td>转换的是输出而不是输入：整数输入得到全 0 或非法模型</td><td>我的修复：<a href="https://github.com/microsoft/onnxscript/pull/3196">onnxscript#3196</a></td></tr>
+<tr><td><code>atan2</code> 遇到带符号的零、无穷大和 NaN</td><td>角度算错</td><td>已有人在修：onnxscript#3152</td></tr>
+<tr><td><code>cross_entropy(label_smoothing=...)</code></td><td>损失算错</td><td>已有人在修：onnxscript#3069</td></tr>
+<tr><td><code>scatter_reduce(reduce="mean")</code></td><td>直接覆盖，没有求平均</td><td>已有人在修：onnxscript#3094</td></tr>
+<tr><td>大输入下的 <code>special.erfcx</code></td><td>输出 0 或 NaN</td><td>已有人在修：onnxscript#3038</td></tr>
+</tbody>
+</table>
+<p>同样的思路用在模型级别上，导出 40 多个 Hugging Face 模型并对比输出，又找到一个：Swin 和 BEiT 在使用 SDPA 注意力时导不出来。这个问题我单独写了<a href="swin-onnx-export-sdpa-stride-zh.html">一篇文章</a>。</p>
+<p>真正的问题里有一半已经有人在修了。我学到的教训是：动手写代码之前，先把开着的和已关闭的 PR 都搜一遍。有一次，我把 <code>atan2</code> 的修复连同测试都写完了，才发现另一位贡献者几天前已经提了同样的修复。</p>
+
+<h2>它骗了我的四种方式</h2>
+<ol>
+<li><strong>常量在 ONNX Runtime 看到之前就被折叠掉了。</strong>第二轮我在 <code>forward</code> 里面构造输入。导出器的优化器在导出时就用 ONNX 参考实现把整段计算折叠成了常量，所以我测的有一部分其实是这个参考实现，而不是 ONNX Runtime。整行都是 <code>-inf</code> 的 <code>logsumexp</code> 就是这样得到了 NaN。ONNX Runtime 本身返回的是 <code>-inf</code>，而参考实现在上游已经修好了（onnx#8441）。第三轮我把所有输入都改成了图的输入。</li>
+<li><strong>容差带来的假象。</strong><code>logit(sigmoid(10 * x), eps=1e-6)</code> 显示有 0.05 的差异。换成精确的输入，导出结果和 PyTorch 完全一致：<code>sigmoid</code> 在 float32 下会饱和到非常接近 1，而 <code>logit</code> 会放大最后几位的差异。每个不一致都要先用手挑的输入重新测一遍，再下结论。</li>
+<li><strong>运行时可能掩盖一张错误的图。</strong>float16 输入的 <code>softmax(x, dtype=torch.float32)</code> 被导出成了 <code>Softmax(float16) -> Cast</code>，但在 CPU 上数值却是对的。ONNX Runtime 的 CPU 后端没有 float16 的 <code>Softmax</code> 内核，会自己先转成 float32，所以这个 bug 只会在有 float16 内核的后端上显现。因此回归测试检查的是图结构，而且关掉了优化器。</li>
+<li><strong>不是每个报错都是 bug。</strong>第三轮的大多数失败都是还不支持的算子（<code>digamma</code>、<code>linalg_inv</code>、<code>bessel_i0</code>、<code>masked_select</code> 等），属于功能需求。还有一些是我自己的错误：在 <code>forward</code> 里用随机数生成器，本来就不可能被导出。</li>
+</ol>
+
+<h2>几点体会</h2>
+<ul>
+<li>一个简短的测试脚本，加上一份好的边界输入清单，就能很快找到真 bug。罕见的输入比罕见的算子更重要。</li>
+<li>把数值作为图的输入传进去，每个发现都要手动复核，数字好得不正常时就去看导出的图。</li>
+<li>写修复之前，先搜一遍已有的 issue 和 PR。</li>
+</ul>
+<p><em>搭建测试脚本、排查这些问题和撰写本文时，我使用了 Claude（Anthropic）辅助。所有结果都经过我本人审阅，各项检查也由我亲自运行。</em></p>
+<hr />
+<p><em>包启明，现居新西兰奥克兰的 AI 研究者，研究方向为大模型推理与模型部署。博士毕业于奥克兰大学 Strong AI Lab，参与 PyTorch ONNX 导出器、ONNX Runtime GenAI 和 Microsoft PyRIT 等开源项目的贡献。</em></p>
+</main>
+</body>
+</html>

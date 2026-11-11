@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Finding ONNX exporter bugs with differential testing: what worked and what fooled me | Qiming Bao</title>
+<meta name="description" content="A differential test of torch eager against torch.onnx.export plus ONNX Runtime, on edge-case inputs, found several real bugs in onnxscript's torchlib. Here is the harness, what it found, and the four ways it produced false alarms.">
+<link rel="canonical" href="https://14h034160212.github.io/blog/onnx-exporter-differential-fuzzing.html">
+<link rel="alternate" hreflang="en" href="https://14h034160212.github.io/blog/onnx-exporter-differential-fuzzing.html">
+<link rel="alternate" hreflang="zh-CN" href="https://14h034160212.github.io/blog/onnx-exporter-differential-fuzzing-zh.html">
+<link rel="icon" type="image/jpeg" href="../qiming.jpg">
+<style>
+:root { --fg:#1f2328; --muted:#59636e; --bg:#ffffff; --code:#f6f8fa; --line:#d1d9e0; --link:#0969da; }
+@media (prefers-color-scheme: dark) { :root { --fg:#e6edf3; --muted:#9198a1; --bg:#0d1117; --code:#161b22; --line:#3d444d; --link:#4493f8; } }
+body { font-family: -apple-system, "Segoe UI", Arial, sans-serif; color:var(--fg); background:var(--bg); margin:0; line-height:1.65; }
+main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: 1.9rem; line-height:1.25; margin: 0.4em 0 0.2em; }
+h2 { margin-top: 2em; border-bottom:1px solid var(--line); padding-bottom:.2em; }
+a { color: var(--link); }
+.meta { color: var(--muted); font-size: .92rem; }
+table { border-collapse: collapse; margin: 1em 0; display:block; overflow-x:auto; }
+th, td { border: 1px solid var(--line); padding: 6px 12px; }
+th { background: var(--code); }
+pre { background: var(--code); padding: 12px; overflow-x: auto; border-radius: 6px; }
+code { background: var(--code); padding: 1px 4px; border-radius: 4px; font-size: .92em; }
+pre code { padding: 0; }
+</style>
+</head>
+<body>
+<main>
+<p class="meta"><a href="../index.html">Qiming Bao</a> · Blog · 11 November 2026 · English / <a href="onnx-exporter-differential-fuzzing-zh.html">中文</a></p>
+<h1>Finding ONNX exporter bugs with differential testing: what worked and what fooled me</h1>
+<p>The PyTorch ONNX exporter translates each ATen op through a function in onnxscript's torchlib. Those functions have unit tests, but the tests mostly feed ordinary random floats. I wanted to know what happens at the edges: NaN, infinity, signed zero, integer and boolean inputs, float16. So I wrote a small differential test that runs each op in PyTorch eager mode and through <code>torch.onnx.export(dynamo=True)</code> plus ONNX Runtime, and compares the two.</p>
+<p>Over three rounds and roughly 300 op-and-argument variants, it found several real bugs, four of which I fixed in open pull requests. It also produced four kinds of false alarm, which are the more useful part of this post.</p>
+
+<h2>The harness</h2>
+<p>Each case is a tiny <code>nn.Module</code> that calls one op. The harness runs it eagerly, exports it, runs the ONNX model on ONNX Runtime, and compares shape, dtype and values. Floats are compared with a tolerance and <code>equal_nan=True</code>; integers and booleans must match exactly.</p>
+<pre><code class="language-python">class M(torch.nn.Module):
+    def __init__(self, fn): super().__init__(); self.fn = fn
+    def forward(self, *args): return self.fn(*args)
+
+expected = M(fn)(*inputs)
+program = torch.onnx.export(M(fn), inputs, dynamo=True)
+actual = program(*inputs)            # runs on ONNX Runtime
+compare(actual, expected)            # shape, dtype, values
+</code></pre>
+<p>The inputs matter more than the ops. Each op ran on a float tensor containing NaN, ±inf, ±0 and tiny values, on int32, int64 and uint8 tensors, on booleans, on an empty tensor, and in float16, bfloat16 and float64. Most bugs live where a PyTorch op accepts a dtype or a special value that the matching ONNX operator does not.</p>
+
+<h2>What it found</h2>
+<table>
+<thead><tr><th>Finding</th><th>Effect</th><th>Status</th></tr></thead>
+<tbody>
+<tr><td><code>ceil</code>, <code>floor</code>, <code>round</code>, <code>trunc</code>, <code>isnan</code>, <code>isfinite</code> on integer inputs</td><td>Invalid ONNX model</td><td>My fix: <a href="https://github.com/microsoft/onnxscript/pull/3178">onnxscript#3178</a></td></tr>
+<tr><td><code>max(x, dim)</code> and <code>min(x, dim)</code> on bool</td><td>Invalid ONNX model</td><td>My fix: <a href="https://github.com/microsoft/onnxscript/pull/3179">onnxscript#3179</a></td></tr>
+<tr><td><code>heaviside(NaN, v)</code></td><td>Returns 1; PyTorch returns 0</td><td>My fix: <a href="https://github.com/microsoft/onnxscript/pull/3180">onnxscript#3180</a></td></tr>
+<tr><td><code>softmax</code>/<code>log_softmax</code> with <code>dtype=</code></td><td>Casts the output instead of the input: zeros or an invalid model for integer input</td><td>My fix: <a href="https://github.com/microsoft/onnxscript/pull/3196">onnxscript#3196</a></td></tr>
+<tr><td><code>atan2</code> with signed zeros, infinities and NaN</td><td>Wrong angles</td><td>Already being fixed in onnxscript#3152</td></tr>
+<tr><td><code>cross_entropy(label_smoothing=...)</code></td><td>Wrong loss</td><td>Already being fixed in onnxscript#3069</td></tr>
+<tr><td><code>scatter_reduce(reduce="mean")</code></td><td>Overwrites instead of averaging</td><td>Already being fixed in onnxscript#3094</td></tr>
+<tr><td><code>special.erfcx</code> for large inputs</td><td>0 or NaN</td><td>Already being fixed in onnxscript#3038</td></tr>
+</tbody>
+</table>
+<p>The same idea at model level, exporting more than 40 Hugging Face models and comparing their outputs, found one more: Swin and BEiT cannot be exported with SDPA attention. I wrote that one up in <a href="swin-onnx-export-sdpa-stride.html">a separate post</a>.</p>
+<p>Half of the real findings were already claimed by someone else. I learned to search open and closed pull requests before writing any code. Once, I wrote a full <code>atan2</code> fix with tests before finding that another contributor had opened the same fix days earlier.</p>
+
+<h2>Four ways it fooled me</h2>
+<ol>
+<li><strong>Constants get folded before ONNX Runtime sees them.</strong> In the second round I built the inputs inside <code>forward</code>. The exporter's optimizer then folded the whole computation at export time, using the ONNX reference implementation, so I was partly testing that evaluator, not ONNX Runtime. <code>logsumexp</code> over a row of <code>-inf</code> came out as NaN that way. ONNX Runtime itself returns <code>-inf</code>, and the reference implementation had already been fixed upstream (onnx#8441). In the third round every input was a graph input.</li>
+<li><strong>Tolerance artefacts.</strong> <code>logit(sigmoid(10 * x), eps=1e-6)</code> showed a 0.05 difference. With exact inputs, the export matches PyTorch: <code>sigmoid</code> saturates close to 1 in float32, and <code>logit</code> amplifies the last bits. Re-test every mismatch on hand-picked inputs before believing it.</li>
+<li><strong>The runtime can hide a wrong graph.</strong> For float16 input, <code>softmax(x, dtype=torch.float32)</code> exported as <code>Softmax(float16) -> Cast</code>, yet the numbers were right on CPU. ONNX Runtime's CPU provider has no float16 <code>Softmax</code> kernel and upcasts on its own, so the bug only shows on providers that do have one. The regression test therefore checks the graph structure, with the optimizer turned off.</li>
+<li><strong>Not every error is a bug.</strong> Most failures in the third round were missing ops (<code>digamma</code>, <code>linalg_inv</code>, <code>bessel_i0</code>, <code>masked_select</code> and others), which are feature requests. Some were my own mistakes: a random generator inside <code>forward</code> cannot be exported at all.</li>
+</ol>
+
+<h2>Takeaways</h2>
+<ul>
+<li>A short harness and a good list of edge-case inputs find real bugs quickly. Exotic inputs matter more than exotic ops.</li>
+<li>Feed the values as graph inputs, re-check every hit by hand, and look at the exported graph when the numbers look too good.</li>
+<li>Search for existing issues and pull requests before writing a fix.</li>
+</ul>
+<p><em>I used Claude (Anthropic) to help build the harness, investigate the findings and draft this post. I reviewed the results and ran the checks myself.</em></p>
+<hr />
+<p><em>Qiming Bao is an AI researcher in Auckland, New Zealand, working on LLM reasoning and model deployment. He received his PhD from the University of Auckland's Strong AI Lab and contributes to the PyTorch ONNX exporter, ONNX Runtime GenAI and Microsoft PyRIT.</em></p>
+</main>
+</body>
+</html>
