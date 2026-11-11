@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Three bugs behind one garbage-output report: debugging Gemma exports in ONNX Runtime GenAI | Qiming Bao</title>
+<meta name="description" content="How a token-by-token comparison against transformers found three bugs in the ONNX Runtime GenAI model builder for Gemma: local layers inheriting global RoPE scaling, an RMSNorm offset added in bfloat16, and a rounded embedding scale.">
+<link rel="canonical" href="https://14h034160212.github.io/blog/gemma-onnx-export-debugging.html">
+<link rel="icon" type="image/jpeg" href="../qiming.jpg">
+<style>
+:root { --fg:#1f2328; --muted:#59636e; --bg:#ffffff; --code:#f6f8fa; --line:#d1d9e0; --link:#0969da; }
+@media (prefers-color-scheme: dark) { :root { --fg:#e6edf3; --muted:#9198a1; --bg:#0d1117; --code:#161b22; --line:#3d444d; --link:#4493f8; } }
+body { font-family: -apple-system, "Segoe UI", Arial, sans-serif; color:var(--fg); background:var(--bg); margin:0; line-height:1.65; }
+main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: 1.9rem; line-height:1.25; margin: 0.4em 0 0.2em; }
+h2 { margin-top: 2em; border-bottom:1px solid var(--line); padding-bottom:.2em; }
+a { color: var(--link); }
+.meta { color: var(--muted); font-size: .92rem; }
+table { border-collapse: collapse; margin: 1em 0; display:block; overflow-x:auto; }
+th, td { border: 1px solid var(--line); padding: 6px 12px; }
+th { background: var(--code); }
+pre { background: var(--code); padding: 12px; overflow-x: auto; border-radius: 6px; }
+code { background: var(--code); padding: 1px 4px; border-radius: 4px; font-size: .92em; }
+pre code { padding: 0; }
+blockquote { margin: 1em 0; padding: 0 1em; color: var(--muted); border-left: 4px solid var(--line); }
+</style>
+</head>
+<body>
+<main>
+<p class="meta"><a href="../index.html">Qiming Bao</a> · Blog · 11 November 2026</p>
+<h1>Three bugs behind one garbage-output report: debugging Gemma exports in ONNX Runtime GenAI</h1>
+<p>A Gemma 3 4B model exported with the ONNX Runtime GenAI model builder answered a Persian question with an empty string, while the same checkpoint in transformers answered correctly. That report, <a href="https://github.com/microsoft/onnxruntime-genai/issues/2277">microsoft/onnxruntime-genai#2277</a>, had been open since July. Chasing it led to three separate builder bugs, and the method that found them is worth more than any one fix.</p>
+<p>This post walks through that method: a token-for-token comparison against transformers, a controlled experiment that proves a root cause, and a check that tells a real numerical bug from a model that is merely sensitive. Every number below comes from fp32 CPU builds and greedy decoding.</p>
+
+<h2>The harness: compare against transformers, token by token</h2>
+<p>The reference is the same checkpoint in transformers, in fp32 with eager attention. For each prompt, the harness records the greedy continuation and the logits at every step, then runs the exported model through the onnxruntime-genai <code>Generator</code> and compares.</p>
+<p>Two numbers come out of each prompt:</p>
+<ul>
+<li><strong>The max abs logits difference</strong> at the first generated token, and at every later step while the two continuations still agree.</li>
+<li><strong>Whether the greedy continuations are identical</strong> for 20 new tokens.</li>
+</ul>
+<p>The five prompts came from the issue: plain English, a sentence with rare words, a Chinese-and-English mix, and two Persian sentences. The chat template is applied, because that is how people run these models.</p>
+<p>Two details cost me time:</p>
+<ol>
+<li><strong>Generation config.</strong> <code>generate(do_sample=False)</code> still applies a checkpoint's <code>repetition_penalty</code>. Qwen2.5 sets it to 1.1, which made a correct export look wrong. Pass <code>repetition_penalty=1.0</code> for the reference.</li>
+<li><strong>KV cache capacity.</strong> The genai runtime refuses to run when <code>max_length</code> is below a model's sliding window (512 for Gemma 3 1B, 4096 for Gemma 2). Set it well above the window.</li>
+</ol>
+
+<h2>Bug 1: local layers inherited the global RoPE scaling</h2>
+<p>Gemma 3 interleaves five sliding-window (local) layers with one global layer. In the 4B, 12B and 27B models, only the global layers use linear RoPE scaling with factor 8; the local layers use plain RoPE. The builder set <code>rescale_factors = 8</code> for the global cos/sin caches and then kept it when it built the local caches. Five of every six layers rotated at 1/8 of the intended frequency, starting at layer 0, which is where the issue reporter had traced the divergence.</p>
+<p>Gemma 3 1B has no RoPE scaling, so it was never affected. Under transformers 5 the builder did not get that far: the nested <code>rope_parameters</code> raised <code>KeyError: 'rope_type'</code> for every Gemma 3 size.</p>
+<p>A plausible cause is not a proven one. To prove it, I built the same text-only 4B checkpoint three ways, changing one thing at a time, and ran each against transformers:</p>
+<table>
+<thead>
+<tr><th>Export of the same checkpoint</th><th style="text-align: right;">First-token logits max abs diff</th><th>Greedy continuations identical</th></tr>
+</thead>
+<tbody>
+<tr><td>Builder 0.14.1, as in the issue</td><td style="text-align: right;">26.8 – 41.3</td><td>0 of 5; both Persian prompts empty</td></tr>
+<tr><td>0.14.1 with only <code>rescale_factors = 1</code> for the local caches</td><td style="text-align: right;">0.0008 – 0.0023</td><td>5 of 5</td></tr>
+<tr><td><code>main</code> builder with the fix</td><td style="text-align: right;">0.0008 – 0.0023</td><td>5 of 5</td></tr>
+</tbody>
+</table>
+<p>The one-line patch on 0.14.1 gives the same numbers as <code>main</code>, so nothing else in the old builder contributed. The fix, <a href="https://github.com/microsoft/onnxruntime-genai/pull/2884">#2884</a>, reads the per-layer <code>rope_parameters</code> and builds the local caches without the global scaling. I also compared the builder's RoPE caches with transformers' <code>Gemma3RotaryEmbedding</code> on the real <code>config.json</code> of all four sizes, at every position (32768 for 1B, 131072 for the others). The max difference was 0 for each.</p>
+
+<h2>Bugs 2 and 3: the right text, but logits off by 0.1</h2>
+<p>With Bug 1 fixed, every Gemma export produced the same greedy text as transformers. The logits still did not match. Gemma 2 2B and Gemma 3 1B differed by 0.04 to 0.24, and Gemma 3 270M by up to 0.44. Qwen3, Granite, LFM2 and SmolLM2 were all within 0.0001 through the same pipeline.</p>
+<p><strong>Is the model just sensitive?</strong> Gemma is known for large activations, so the first question was whether transformers itself moves that much. It does not. For Gemma 3 1B, fp32 against fp64 differs by 6e-5, and eager against SDPA attention by 6e-5, the same as Qwen3. The export was off by three orders of magnitude more than the model's own noise.</p>
+<p><strong>Where does it start?</strong> I truncated the 1B model to 1, 2 and 6 layers, in both transformers and the builder, and compared again. One layer was already off by 0.034, so the error came from inside a single layer, not from accumulation.</p>
+<p><strong>What changed?</strong> The 4B checkpoint from Bug 1 had been saved in fp32 and was accurate. The hub checkpoints for 1B and Gemma 2 are bfloat16. Rebuilding the 1B from an fp32 copy of the same weights cut the error to 0.0005–0.0016. That pointed to two things:</p>
+<ul>
+<li><strong>Bug 2: the RMSNorm offset was added in bfloat16.</strong> Transformers 5 loads a checkpoint in its stored dtype, where transformers 4 loaded fp32. Gemma's RMSNorm scales by <code>1 + weight</code>, and the builder computed that sum on the bfloat16 tensor, rounding it to 8 significant bits before writing an fp32 model. The fix adds the offset after upcasting to fp32.</li>
+<li><strong>Bug 3: the embedding scale was rounded.</strong> The builder used <code>round(sqrt(hidden_size), 2)</code>, so 33.94 instead of 33.941 for Gemma 3 1B. Transformers uses the exact value. Gemma 2 2B was not affected because sqrt(2304) is exactly 48.</li>
+</ul>
+<p>With both fixes, built from the original bfloat16 hub checkpoints:</p>
+<table>
+<thead>
+<tr><th>Model</th><th style="text-align: right;">Logits diff on <code>main</code></th><th style="text-align: right;">With the fixes</th><th>Greedy identical</th></tr>
+</thead>
+<tbody>
+<tr><td>Gemma 2 2B</td><td style="text-align: right;">0.044 – 0.112</td><td style="text-align: right;">0.00003 – 0.00007</td><td>4 of 5 → 5 of 5</td></tr>
+<tr><td>Gemma 3 1B</td><td style="text-align: right;">0.087 – 0.243</td><td style="text-align: right;">0.00005 – 0.00012</td><td>5 of 5</td></tr>
+<tr><td>Gemma 3 270M</td><td style="text-align: right;">0.119 – 0.442</td><td style="text-align: right;">0.00007 – 0.00027</td><td>5 of 5</td></tr>
+</tbody>
+</table>
+<p>The same offset code serves every model whose norm adds 1 to its weight, so the change also applies to Nemotron, which I did not test. A unit test checks the Gemma q/k norms in an fp16 export too.</p>
+
+<h2>Lessons for validating model exports</h2>
+<ol>
+<li><strong>Compare logits, not just text.</strong> Bugs 2 and 3 never changed a greedy token in my prompts. Only the logits showed them, and they can change sampled output and long generations.</li>
+<li><strong>Measure the reference's own noise first.</strong> fp32 against fp64, and eager against SDPA, tells you what "close" means for that model. Without it, a 0.1 error is easy to dismiss as Gemma being Gemma.</li>
+<li><strong>Prove a root cause with one change.</strong> Apply only the suspected fix to the broken version and show it reaches the good numbers. Here that ruled out every other difference between builder 0.14.1 and <code>main</code>.</li>
+<li><strong>Bisect by depth.</strong> Truncating <code>num_hidden_layers</code> in both the reference and the export tells you whether an error comes from one layer or builds up across many.</li>
+<li><strong>Test the checkpoints people actually download.</strong> An fp32 test checkpoint hid the bfloat16 bug completely. The hub checkpoints are bfloat16.</li>
+<li><strong>Watch for silent defaults.</strong> A dependency upgrade (transformers 4 to 5) changed the load dtype, and a <code>generation_config</code> added a repetition penalty. Neither raised an error.</li>
+</ol>
+
+<h2>Status</h2>
+<p>The RoPE fix is merged; the precision fix is in review. Until it lands, building from an fp32 copy of the checkpoint avoids the offset error.</p>
+<table>
+<thead>
+<tr><th>Item</th><th>What</th><th>State (11 November 2026)</th></tr>
+</thead>
+<tbody>
+<tr><td><a href="https://github.com/microsoft/onnxruntime-genai/pull/2884">#2884</a></td><td>Gemma 3 RoPE: transformers 5 parameters, unscaled local caches</td><td>Merged</td></tr>
+<tr><td><a href="https://github.com/microsoft/onnxruntime-genai/issues/2277">#2277</a></td><td>Gemma 3 4B garbage output</td><td>Root cause fixed by #2884; verification posted</td></tr>
+<tr><td><a href="https://github.com/microsoft/onnxruntime-genai/pull/2939">#2939</a></td><td>Gemma RMSNorm offset in fp32, exact embedding scale</td><td>In review</td></tr>
+<tr><td><a href="https://github.com/microsoft/onnxruntime-genai/issues/2938">#2938</a></td><td>SmolLM3 fails to build (found with the same harness)</td><td>Reported</td></tr>
+</tbody>
+</table>
+<p>The harness is under a hundred lines of Python around transformers and onnxruntime-genai. If you maintain an export path for another model family, running the same five prompts against transformers is a cheap first check.</p>
+<p><em>I used Claude (Anthropic) to help investigate these bugs and draft this post. I reviewed the results and ran the checks myself.</em></p>
+<hr />
+<p><em>Qiming Bao is an AI researcher in Auckland, New Zealand, working on LLM reasoning and model deployment. He received his PhD from the University of Auckland's Strong AI Lab and contributes to the PyTorch ONNX exporter, ONNX Runtime GenAI and Microsoft PyRIT.</em></p>
+</main>
+</body>
+</html>
