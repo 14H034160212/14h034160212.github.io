@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Re-implementing LayoutLMv3 pre-training: what continued pre-training did and did not buy | Qiming Bao</title>
+<meta name="description" content="An independent, tested re-implementation of LayoutLMv3's MLM, MIM and WPA objectives, a check that continued pre-training really starts from the released encoder, and pre-registered experiments on 42k and 400k IDL pages.">
+<link rel="canonical" href="https://14h034160212.github.io/blog/layoutlmv3-continued-pretraining.html">
+<link rel="alternate" hreflang="en" href="https://14h034160212.github.io/blog/layoutlmv3-continued-pretraining.html">
+<link rel="alternate" hreflang="zh-CN" href="https://14h034160212.github.io/blog/layoutlmv3-continued-pretraining-zh.html">
+<link rel="icon" type="image/jpeg" href="../qiming.jpg">
+<style>
+:root { --fg:#1f2328; --muted:#59636e; --bg:#ffffff; --code:#f6f8fa; --line:#d1d9e0; --link:#0969da; }
+@media (prefers-color-scheme: dark) { :root { --fg:#e6edf3; --muted:#9198a1; --bg:#0d1117; --code:#161b22; --line:#3d444d; --link:#4493f8; } }
+body { font-family: -apple-system, "Segoe UI", Arial, sans-serif; color:var(--fg); background:var(--bg); margin:0; line-height:1.65; }
+main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: 1.9rem; line-height:1.25; margin: 0.4em 0 0.2em; }
+h2 { margin-top: 2em; border-bottom:1px solid var(--line); padding-bottom:.2em; }
+a { color: var(--link); }
+.meta { color: var(--muted); font-size: .92rem; }
+table { border-collapse: collapse; margin: 1em 0; display:block; overflow-x:auto; }
+th, td { border: 1px solid var(--line); padding: 6px 12px; }
+th { background: var(--code); }
+pre { background: var(--code); padding: 12px; overflow-x: auto; border-radius: 6px; }
+code { background: var(--code); padding: 1px 4px; border-radius: 4px; font-size: .92em; }
+pre code { padding: 0; }
+img { max-width: 100%; height: auto; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+</style>
+</head>
+<body>
+<main>
+<p class="meta"><a href="../index.html">Qiming Bao</a> · Blog · 12 November 2026 · English / <a href="layoutlmv3-continued-pretraining-zh.html">中文</a></p>
+<h1>Re-implementing LayoutLMv3 pre-training: what continued pre-training did and did not buy</h1>
+<p>LayoutLMv3 is pre-trained with three objectives: masked language modelling (MLM), masked image modelling (MIM) and word-patch alignment (WPA). Microsoft released the fine-tuning code and the checkpoints, but not the pre-training code, and people keep asking for it (<a href="https://github.com/microsoft/unilm/issues/733">unilm#733</a>, <a href="https://github.com/microsoft/unilm/issues/1042">#1042</a>, <a href="https://github.com/microsoft/unilm/issues/1609">#1609</a> and others). I wrote a small, tested re-implementation on top of Hugging Face <code>transformers</code>: <a href="https://github.com/14H034160212/layoutlmv3-pretraining">14H034160212/layoutlmv3-pretraining</a>. It is an independent implementation from the paper, not Microsoft's code.</p>
+<p>This post is about what I learned from using it for <em>continued</em> pre-training of <code>microsoft/layoutlmv3-base</code> and <code>-large</code>. The short version: the released encoder is a strong starting point, my code builds on it correctly, and adding up to 400k more document pages gave at most a small gain on FUNSD and none on CORD.</p>
+
+<h2>What is implemented</h2>
+<table>
+<thead><tr><th>Objective</th><th>Paper</th><th>Here</th></tr></thead>
+<tbody>
+<tr><td>MLM</td><td>mask 30% of text tokens, spans with lengths ~ Poisson(3)</td><td>span masking plus an LM head tied to the word embeddings</td></tr>
+<tr><td>MIM</td><td>mask 40% of image patches blockwise, predict discrete visual tokens from a document dVAE</td><td>blockwise masking with a learned <code>[MASK]</code> patch embedding; the targets come from OpenAI's DALL-E dVAE (or a k-means codebook)</td></tr>
+<tr><td>WPA</td><td>for each unmasked text token, predict whether its image patches are masked</td><td>labels from each token's box on the 14×14 patch grid, two-layer MLP head</td></tr>
+</tbody>
+</table>
+<p>One difference is deliberate. The paper's MIM targets come from DiT's document dVAE, which was never released, so I use the public DALL-E dVAE, which was trained on natural images. The output is a plain <code>LayoutLMv3Model</code> checkpoint that the usual task heads load directly.</p>
+
+<h2>Lesson 1: check where continued pre-training really starts</h2>
+<p>My first run looked like training from zero: validation loss 24.8 and MLM accuracy 0.00 at step 0. The reason is that the released checkpoints contain only the encoder. The MLM, MIM and WPA heads and the image <code>[MASK]</code> embedding are random at step 0, so step-0 metrics measure random heads, not the encoder. Training everything jointly from there also lets random-head gradients push on a pretrained encoder.</p>
+<p>The fix is a <strong>head warm-up</strong>: 1,000 steps that train only the new parameters with the encoder frozen. I checked that the encoder is bit-identical afterwards, and fine-tuning it gives exactly the released model's FUNSD score. The warm-up turns into a useful correctness check:</p>
+<table>
+<thead><tr><th>Frozen encoder, after 1,000 head-only steps</th><th>MLM accuracy</th><th>MIM accuracy</th></tr></thead>
+<tbody>
+<tr><td>released <code>layoutlmv3-base</code></td><td><strong>0.511</strong></td><td>0.122</td></tr>
+<tr><td>released <code>layoutlmv3-large</code></td><td><strong>0.574</strong></td><td>0.129</td></tr>
+<tr><td>random encoder, same config</td><td>0.056</td><td>0.039</td></tr>
+</tbody>
+</table>
+<p>A new head can only read masked tokens from a frozen encoder that well if the checkpoint is loaded correctly and the input pipeline (tokenisation, 0-1000 segment boxes, span masking, image normalisation) matches what the encoder saw in pre-training. It does not prove the code is equivalent to Microsoft's. Still, it is a much better check than a loss curve that starts at 24.8. It also exposed something about my first run: its final MLM accuracy after 6,000 joint steps was 0.515, barely above the 0.511 the frozen encoder gives after the warm-up. Most of that curve was the head being learned.</p>
+<p><img src="https://raw.githubusercontent.com/14H034160212/layoutlmv3-pretraining/master/results/starting_points.png" alt="Starting points of continued pre-training and fine-tuning for released, continued and randomly initialised encoders"></p>
+
+<h2>Lesson 2: decide what counts as a gain before you look</h2>
+<p>The paired difference in fine-tuning F1 between two checkpoints varies by about 0.75 points (standard deviation) from seed to seed, which is as large as any effect I was looking for. So before each experiment I committed the plan and the decision rule to the repository. For the scale-up the rule was: over 5 seeds × 2 tasks, the mean paired gain must be at least +0.5 F1 points, positive on both FUNSD and CORD, with p &lt; 0.05.</p>
+<table>
+<thead><tr><th>Initialisation (base), 5 seeds</th><th>FUNSD F1</th><th>CORD F1</th></tr></thead>
+<tbody>
+<tr><td><code>microsoft/layoutlmv3-base</code></td><td>0.895 ± 0.007</td><td>0.936 ± 0.004</td></tr>
+<tr><td>+ 42k IDL pages</td><td>0.899 ± 0.004</td><td>0.933 ± 0.004</td></tr>
+<tr><td>+ 402k IDL pages</td><td>0.900 (+0.50, p = 0.25)</td><td>0.939 (+0.32, p = 0.28)</td></tr>
+</tbody>
+</table>
+<p>Ten times more pages gave a clearly lower pre-training validation loss (8.38 after the warm-up, 6.21 at the best step) and higher MLM and MIM accuracy, but did not meet the rule downstream. With 10 seeds and a stricter evaluation, the 402k checkpoint gains +0.65 F1 on FUNSD (p = 0.047, not corrected for multiple comparisons) and nothing on CORD. That fits the data: the Industry Documents Library is mostly forms and letters, like FUNSD, while CORD is receipts. The released model was already pre-trained on about 11M pages of similar documents, so 400k more general pages is a small addition. In-domain pages for the target task look like the more promising direction.</p>
+
+<h2>Lesson 3: some objectives are easier to fool than they look</h2>
+<p>WPA reaches 99% accuracy quickly, and that number means little. Whether a token's patches are masked can be read off the learned <code>[MASK]</code> patch embedding. A head that also looks at the token's patches makes the shortcut obvious: with a <em>random</em> encoder it reaches AUC 1.000. I kept that variant in the code only so the shortcut can be reproduced, and report WPA as balanced accuracy and AUC on a text-only head. There, the released encoder gives AUC 0.904 with a two-layer MLP against at most 0.69 for a random one, so it does carry alignment information.</p>
+<p>An independent code review also found three data-pipeline bugs: about 10% of pages were rotated against their OCR boxes, all 12 DataLoader workers drew identical masks, and resuming replayed the start of the corpus. Each now has a regression test. Re-running the 400k experiment with the fixes did not measurably change the downstream results (p = 0.35), but I would not have known that without re-running it.</p>
+
+<h2>If you want to use it</h2>
+<pre><code>pip install -e ".[dev]"
+pytest tests
+python scripts/pretrain.py --corpus idl --idl_shards 0-26 --exclude_funsd_test \
+    --image_tokenizer dalle --head_warmup_steps 1000 --output_dir runs/idl_base</code></pre>
+<p>Every run is recorded with its exact command, git commit, configuration and metrics, and new runs can log to Weights &amp; Biases. Note the licences: the code is MIT, but the <code>microsoft/layoutlmv3-*</code> weights are CC BY-NC-SA 4.0, and checkpoints continued from them inherit that. The repository has a <code>CITATION.cff</code>; if you use the code, please cite the repository and the original LayoutLMv3 paper.</p>
+<p><em>I used Claude (Anthropic) to help write the code and draft this post. I reviewed the design and the results, and every number here comes from the scripts and result files in the repository.</em></p>
+<hr />
+<p><em>Qiming Bao is an AI researcher in Auckland, New Zealand, working on LLM reasoning and model deployment. He received his PhD from the University of Auckland's Strong AI Lab and contributes to the PyTorch ONNX exporter, ONNX Runtime, ONNX Runtime GenAI and Microsoft PyRIT.</em></p>
+</main>
+</body>
+</html>
