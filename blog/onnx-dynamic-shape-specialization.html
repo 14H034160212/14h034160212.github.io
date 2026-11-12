@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Your ONNX model says its inputs are dynamic. Some of them aren't | Qiming Bao</title>
+<meta name="description" content="Exporting with dynamic shapes, then running at a different size, shows that torch.onnx can silently specialize adaptive_avg_pool2d and kron to the example input. torchvision VGG11 is affected.">
+<link rel="canonical" href="https://14h034160212.github.io/blog/onnx-dynamic-shape-specialization.html">
+<link rel="alternate" hreflang="en" href="https://14h034160212.github.io/blog/onnx-dynamic-shape-specialization.html">
+<link rel="alternate" hreflang="zh-CN" href="https://14h034160212.github.io/blog/onnx-dynamic-shape-specialization-zh.html">
+<link rel="icon" type="image/jpeg" href="../qiming.jpg">
+<style>
+:root { --fg:#1f2328; --muted:#59636e; --bg:#ffffff; --code:#f6f8fa; --line:#d1d9e0; --link:#0969da; }
+@media (prefers-color-scheme: dark) { :root { --fg:#e6edf3; --muted:#9198a1; --bg:#0d1117; --code:#161b22; --line:#3d444d; --link:#4493f8; } }
+body { font-family: -apple-system, "Segoe UI", Arial, sans-serif; color:var(--fg); background:var(--bg); margin:0; line-height:1.65; }
+main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: 1.9rem; line-height:1.25; margin: 0.4em 0 0.2em; }
+h2 { margin-top: 2em; border-bottom:1px solid var(--line); padding-bottom:.2em; }
+a { color: var(--link); }
+.meta { color: var(--muted); font-size: .92rem; }
+table { border-collapse: collapse; margin: 1em 0; display:block; overflow-x:auto; }
+th, td { border: 1px solid var(--line); padding: 6px 12px; }
+th { background: var(--code); }
+pre { background: var(--code); padding: 12px; overflow-x: auto; border-radius: 6px; }
+code { background: var(--code); padding: 1px 4px; border-radius: 4px; font-size: .92em; }
+pre code { padding: 0; }
+</style>
+</head>
+<body>
+<main>
+<p class="meta"><a href="../index.html">Qiming Bao</a> · Blog · 12 November 2026 · English / <a href="onnx-dynamic-shape-specialization-zh.html">中文</a></p>
+<h1>Your ONNX model says its inputs are dynamic. Some of them aren't</h1>
+<p>When you export with <code>dynamic_shapes</code>, the ONNX model's input axes come out symbolic, and it is natural to assume the model now works for any size. I tested that assumption op by op: export each op with every dimension dynamic, then run it at a <em>different</em> size and compare with PyTorch. Most ops passed. Two did not, and one of them breaks torchvision's VGG. I reported it as <a href="https://github.com/pytorch/pytorch/issues/204405">pytorch/pytorch#204405</a>.</p>
+
+<h2>The test</h2>
+<p>About 60 ops, each in a small module, exported with <code>torch.export.Dim.AUTO</code> on every axis. Each was then run on ONNX Runtime with inputs of a new size, for example exported at <code>(2, 5)</code> and run at <code>(3, 9)</code>, and compared with eager PyTorch. Slicing, padding, pooling, interpolation, normalization, sorting, attention, STFT and the rest all handled the new sizes. <code>adaptive_avg_pool2d</code> and <code>kron</code> did not.</p>
+
+<h2>adaptive_avg_pool2d: right at one size, wrong at every other</h2>
+<pre><code class="language-python">class M(torch.nn.Module):
+    def forward(self, x):
+        return F.adaptive_avg_pool2d(x, (2, 3))
+
+x = torch.randn(1, 2, 6, 6)
+dyn = ({0: Dim.AUTO, 1: Dim.AUTO, 2: Dim.AUTO, 3: Dim.AUTO},)
+onnx_program = torch.onnx.export(M(), (x,), dynamic_shapes=dyn, dynamo=True)
+</code></pre>
+<table>
+<thead><tr><th>Input</th><th>PyTorch</th><th>ONNX</th></tr></thead>
+<tbody>
+<tr><td>(1, 2, 6, 6), the example</td><td>(1, 2, 2, 3)</td><td>(1, 2, 2, 3)</td></tr>
+<tr><td>(2, 3, 8, 9)</td><td>(2, 3, 2, 3)</td><td><strong>(2, 3, 2, 4)</strong></td></tr>
+<tr><td>(1, 1, 12, 12)</td><td>(1, 1, 2, 3)</td><td><strong>(1, 1, 4, 6)</strong></td></tr>
+</tbody>
+</table>
+<p>There is no error and no warning. The ONNX graph is one <code>AveragePool</code> with <code>kernel_shape=(3, 2)</code> and <code>strides=(3, 2)</code>, computed from the 6x6 example, while the input axes are still declared dynamic.</p>
+<p>This is not an exotic op. torchvision's <code>vgg11()</code> ends its backbone with <code>AdaptiveAvgPool2d((7, 7))</code>. Exported with dynamic height and width, it works at 224x224. At 256x256 and 448x448, ONNX Runtime fails in the classifier's <code>Gemm</code>. Without the classifier, the backbone returns <code>(2, 512, 8, 8)</code> and <code>(2, 512, 14, 14)</code> instead of <code>(2, 512, 7, 7)</code>, silently.</p>
+
+<h2>Where the size gets baked in</h2>
+<p><code>torch.export</code> itself is fine. It keeps <code>aten._adaptive_avg_pool2d</code> as one op, and the exported program gives the right shape, <code>(1, 1, 2, 3)</code>, for a 12x12 input. The problem is a later step in the ONNX exporter:</p>
+<ol>
+<li>torchlib, which maps ATen ops to ONNX, has no <code>_adaptive_avg_pool2d</code>. It was removed because ONNX has no general adaptive pooling op, so the exporter falls back to PyTorch's own decomposition.</li>
+<li>That decomposition has a fast path: if the input size divides the output size, call <code>avg_pool2d</code> with <code>kernel = input // output</code>. With symbolic sizes, this evaluates the condition and the kernel for the example input, and the decomposed graph becomes <code>avg_pool2d(x, [3, 2], [3, 2])</code>.</li>
+<li>This happens after export, during the exporter's own decomposition, so the program's range constraints still say the dims are dynamic, and so does the ONNX model.</li>
+</ol>
+<p><code>kron</code> follows the same pattern. It is decomposed into <code>_unsafe_view</code> calls with the example's sizes baked in, and at a new size ONNX Runtime fails in a <code>Reshape</code>. There is one useful detail: the decomposed <code>ExportedProgram</code> does record the specialization. Running it at the new size raises <code>Guard failed: a.size()[0] == 2</code>. So the exporter could detect this case by comparing guards before and after its decomposition, and warn instead of writing a model that is wrong for other sizes.</p>
+
+<h2>One false alarm</h2>
+<p><code>conv1d(padding="same")</code> also failed to export at first. I had made the <em>weight</em> dynamic too, so the padding depended on a symbolic kernel size, which an ONNX <code>Conv</code> attribute cannot hold. In a real model the weight is a parameter with a fixed shape. With only the input dynamic, <code>Conv1d(..., padding="same")</code> exports and matches PyTorch at new sizes for every kernel size and dilation I tried. Make your test match how the op is used in real models before you file a bug.</p>
+
+<h2>What to do today</h2>
+<ul>
+<li>After exporting with dynamic shapes, run the ONNX model at <strong>two or three sizes other than the example</strong> and compare with PyTorch. One run at the example size proves nothing about dynamic axes.</li>
+<li>If your model uses <code>AdaptiveAvgPool2d</code> with an output size other than 1, either export with static spatial sizes or check the exported <code>AveragePool</code> attributes. An output size of 1 passed my test.</li>
+<li>Follow <a href="https://github.com/pytorch/pytorch/issues/204405">pytorch/pytorch#204405</a> for the fix. I proposed a shape-dynamic torchlib implementation, built from <code>CumSum</code> and <code>Gather</code>, and a general check in the exporter.</li>
+</ul>
+<p><em>I used Claude (Anthropic) to help build the tests, investigate the findings and draft this post. I reviewed the results and ran the checks myself.</em></p>
+<hr />
+<p><em>Qiming Bao is an AI researcher in Auckland, New Zealand, working on LLM reasoning and model deployment. He received his PhD from the University of Auckland's Strong AI Lab and contributes to the PyTorch ONNX exporter, ONNX Runtime GenAI and Microsoft PyRIT.</em></p>
+</main>
+</body>
+</html>

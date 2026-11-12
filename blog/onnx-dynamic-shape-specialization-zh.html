@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>你的 ONNX 模型说输入是动态的，但有些其实不是 | 包启明</title>
+<meta name="description" content="用动态形状导出、再换一个尺寸运行，会发现 torch.onnx 可能把 adaptive_avg_pool2d 和 kron 悄悄特化成导出时的尺寸。torchvision 的 VGG11 也受影响。">
+<link rel="canonical" href="https://14h034160212.github.io/blog/onnx-dynamic-shape-specialization-zh.html">
+<link rel="alternate" hreflang="en" href="https://14h034160212.github.io/blog/onnx-dynamic-shape-specialization.html">
+<link rel="alternate" hreflang="zh-CN" href="https://14h034160212.github.io/blog/onnx-dynamic-shape-specialization-zh.html">
+<link rel="icon" type="image/jpeg" href="../qiming.jpg">
+<style>
+:root { --fg:#1f2328; --muted:#59636e; --bg:#ffffff; --code:#f6f8fa; --line:#d1d9e0; --link:#0969da; }
+@media (prefers-color-scheme: dark) { :root { --fg:#e6edf3; --muted:#9198a1; --bg:#0d1117; --code:#161b22; --line:#3d444d; --link:#4493f8; } }
+body { font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial, sans-serif; color:var(--fg); background:var(--bg); margin:0; line-height:1.75; }
+main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: 1.9rem; line-height:1.3; margin: 0.4em 0 0.2em; }
+h2 { margin-top: 2em; border-bottom:1px solid var(--line); padding-bottom:.2em; }
+a { color: var(--link); }
+.meta { color: var(--muted); font-size: .92rem; }
+table { border-collapse: collapse; margin: 1em 0; display:block; overflow-x:auto; }
+th, td { border: 1px solid var(--line); padding: 6px 12px; }
+th { background: var(--code); }
+pre { background: var(--code); padding: 12px; overflow-x: auto; border-radius: 6px; }
+code { background: var(--code); padding: 1px 4px; border-radius: 4px; font-size: .92em; }
+pre code { padding: 0; }
+</style>
+</head>
+<body>
+<main>
+<p class="meta"><a href="../index.html">Qiming Bao</a> · Blog · 2026 年 11 月 12 日 · <a href="onnx-dynamic-shape-specialization.html">English</a> / 中文</p>
+<h1>你的 ONNX 模型说输入是动态的，但有些其实不是</h1>
+<p>用 <code>dynamic_shapes</code> 导出之后，ONNX 模型的输入维度会变成符号维度，人们自然会以为这个模型现在能处理任意尺寸了。我逐个算子验证了这个假设：每个算子都把所有维度设成动态的来导出，然后用<em>另一个</em>尺寸运行，和 PyTorch 对比。大多数算子都通过了，有两个没有，其中一个会让 torchvision 的 VGG 出错。我把它报告成了 <a href="https://github.com/pytorch/pytorch/issues/204405">pytorch/pytorch#204405</a>。</p>
+
+<h2>测试方法</h2>
+<p>大约 60 个算子，每个都放在一个小模块里，所有维度都用 <code>torch.export.Dim.AUTO</code> 导出。然后在 ONNX Runtime 上用新尺寸的输入运行，比如用 <code>(2, 5)</code> 导出、用 <code>(3, 9)</code> 运行，再和 eager 模式的 PyTorch 对比。切片、填充、池化、插值、归一化、排序、注意力、STFT 等都能正确处理新尺寸，只有 <code>adaptive_avg_pool2d</code> 和 <code>kron</code> 不行。</p>
+
+<h2>adaptive_avg_pool2d：只在一个尺寸下正确</h2>
+<pre><code class="language-python">class M(torch.nn.Module):
+    def forward(self, x):
+        return F.adaptive_avg_pool2d(x, (2, 3))
+
+x = torch.randn(1, 2, 6, 6)
+dyn = ({0: Dim.AUTO, 1: Dim.AUTO, 2: Dim.AUTO, 3: Dim.AUTO},)
+onnx_program = torch.onnx.export(M(), (x,), dynamic_shapes=dyn, dynamo=True)
+</code></pre>
+<table>
+<thead><tr><th>输入</th><th>PyTorch</th><th>ONNX</th></tr></thead>
+<tbody>
+<tr><td>(1, 2, 6, 6)，导出时的尺寸</td><td>(1, 2, 2, 3)</td><td>(1, 2, 2, 3)</td></tr>
+<tr><td>(2, 3, 8, 9)</td><td>(2, 3, 2, 3)</td><td><strong>(2, 3, 2, 4)</strong></td></tr>
+<tr><td>(1, 1, 12, 12)</td><td>(1, 1, 2, 3)</td><td><strong>(1, 1, 4, 6)</strong></td></tr>
+</tbody>
+</table>
+<p>没有报错，也没有警告。ONNX 图里只有一个 <code>AveragePool</code>，<code>kernel_shape=(3, 2)</code>、<code>strides=(3, 2)</code>，都是用 6×6 的示例输入算出来的，而输入维度却仍然被声明为动态的。</p>
+<p>这不是什么冷门算子。torchvision 的 <code>vgg11()</code> 主干网络最后就是一个 <code>AdaptiveAvgPool2d((7, 7))</code>。用动态的高和宽导出后，224×224 能正常运行；换成 256×256 和 448×448，ONNX Runtime 会在分类头的 <code>Gemm</code> 处报错。去掉分类头只看主干网络，它会静默地输出 <code>(2, 512, 8, 8)</code> 和 <code>(2, 512, 14, 14)</code>，而正确结果应该是 <code>(2, 512, 7, 7)</code>。</p>
+
+<h2>尺寸是在哪里被写死的</h2>
+<p><code>torch.export</code> 本身没有问题。它把 <code>aten._adaptive_avg_pool2d</code> 当作一个完整的算子保留下来，导出的程序对 12×12 的输入能给出正确的形状 <code>(1, 1, 2, 3)</code>。问题出在 ONNX 导出器后面的一个步骤：</p>
+<ol>
+<li>负责把 ATen 算子翻译成 ONNX 的 torchlib 里没有 <code>_adaptive_avg_pool2d</code>。它之前被删掉了，因为 ONNX 没有通用的自适应池化算子，所以导出器只能退回 PyTorch 自己的分解规则。</li>
+<li>这条分解规则里有一个快速路径：如果输入尺寸能被输出尺寸整除，就调用 <code>avg_pool2d</code>，并取 <code>kernel = 输入 // 输出</code>。在符号尺寸下，这个条件和卷积核都按示例输入算出了具体的值，分解后的图就变成了 <code>avg_pool2d(x, [3, 2], [3, 2])</code>。</li>
+<li>这一切发生在导出<em>之后</em>、导出器自己做分解的时候，所以程序的 range constraints 仍然说这些维度是动态的，ONNX 模型也一样。</li>
+</ol>
+<p><code>kron</code> 是同样的模式：它被分解成几个把示例尺寸写死的 <code>_unsafe_view</code>，换一个尺寸运行时，ONNX Runtime 会在 <code>Reshape</code> 处报错。这里有一个很有用的细节：分解后的 <code>ExportedProgram</code> 其实<em>记录了</em>这次特化，用新尺寸运行它会报 <code>Guard failed: a.size()[0] == 2</code>。所以导出器完全可以在分解前后对比一下 guard，发现这种情况并给出警告，而不是写出一个在其他尺寸下出错的模型。</p>
+
+<h2>一个误报</h2>
+<p><code>conv1d(padding="same")</code> 一开始也导出失败了。原因是我把<em>卷积核</em>也设成了动态形状，于是填充量依赖于一个符号化的卷积核大小，而 ONNX <code>Conv</code> 的属性没法表示它。在真实模型里，卷积核是形状固定的参数。只把输入设成动态的，<code>Conv1d(..., padding="same")</code> 在我试过的所有卷积核大小和 dilation 下都能导出，换尺寸后的结果也和 PyTorch 一致。提 bug 之前，先让测试符合这个算子在真实模型中的用法。</p>
+
+<h2>现在可以做什么</h2>
+<ul>
+<li>用动态形状导出后，<strong>用两三个和示例不同的尺寸</strong>运行 ONNX 模型，并和 PyTorch 对比。只在示例尺寸下跑一次，对动态维度什么也证明不了。</li>
+<li>如果模型里用了输出尺寸不是 1 的 <code>AdaptiveAvgPool2d</code>，要么用静态的空间尺寸导出，要么检查导出后 <code>AveragePool</code> 的属性。输出尺寸为 1 的情况在我的测试里是通过的。</li>
+<li>修复进展可以关注 <a href="https://github.com/pytorch/pytorch/issues/204405">pytorch/pytorch#204405</a>。我在里面提出了一个支持动态形状的 torchlib 实现（基于 <code>CumSum</code> 和 <code>Gather</code>），以及在导出器里加一个通用检查。</li>
+</ul>
+<p><em>编写测试、排查这些问题和撰写本文时，我使用了 Claude（Anthropic）辅助。所有结果都经过我本人审阅，各项检查也由我亲自运行。</em></p>
+<hr />
+<p><em>包启明，现居新西兰奥克兰的 AI 研究者，研究方向为大模型推理与模型部署。博士毕业于奥克兰大学 Strong AI Lab，参与 PyTorch ONNX 导出器、ONNX Runtime GenAI 和 Microsoft PyRIT 等开源项目的贡献。</em></p>
+</main>
+</body>
+</html>
