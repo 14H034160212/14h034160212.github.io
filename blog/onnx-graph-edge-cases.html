@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Three ONNX graph details that tools get wrong | Qiming Bao</title>
+<meta name="description" content="An empty optional input is not an omitted one, a sliced Shape only needs the dims it selects, and onnx before 1.21 rejects Constant(value_ints) as Pad's pads. Each one broke a real tool this week.">
+<link rel="canonical" href="https://14h034160212.github.io/blog/onnx-graph-edge-cases.html">
+<link rel="alternate" hreflang="en" href="https://14h034160212.github.io/blog/onnx-graph-edge-cases.html">
+<link rel="alternate" hreflang="zh-CN" href="https://14h034160212.github.io/blog/onnx-graph-edge-cases-zh.html">
+<link rel="icon" type="image/jpeg" href="../qiming.jpg">
+<style>
+:root { --fg:#1f2328; --muted:#59636e; --bg:#ffffff; --code:#f6f8fa; --line:#d1d9e0; --link:#0969da; }
+@media (prefers-color-scheme: dark) { :root { --fg:#e6edf3; --muted:#9198a1; --bg:#0d1117; --code:#161b22; --line:#3d444d; --link:#4493f8; } }
+body { font-family: -apple-system, "Segoe UI", Arial, sans-serif; color:var(--fg); background:var(--bg); margin:0; line-height:1.65; }
+main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: 1.9rem; line-height:1.25; margin: 0.4em 0 0.2em; }
+h2 { margin-top: 2em; border-bottom:1px solid var(--line); padding-bottom:.2em; }
+a { color: var(--link); }
+.meta { color: var(--muted); font-size: .92rem; }
+table { border-collapse: collapse; margin: 1em 0; display:block; overflow-x:auto; }
+th, td { border: 1px solid var(--line); padding: 6px 12px; }
+th { background: var(--code); }
+pre { background: var(--code); padding: 12px; overflow-x: auto; border-radius: 6px; }
+code { background: var(--code); padding: 1px 4px; border-radius: 4px; font-size: .92em; }
+pre code { padding: 0; }
+</style>
+</head>
+<body>
+<main>
+<p class="meta"><a href="../index.html">Qiming Bao</a> · Blog · 12 November 2026 · English / <a href="onnx-graph-edge-cases-zh.html">中文</a></p>
+<h1>Three ONNX graph details that tools get wrong</h1>
+<p>This week I fixed three bugs in ONNX tooling: two in ONNX Runtime's graph optimizer and one in my own exporter code. None of them crashed anything. A model ran a little slower than it should, or a test failed only in CI. All three come from small details of the ONNX format that are easy to miss when you write a graph pass or an exporter.</p>
+
+<h2>1. An empty optional input is not the same as an omitted one</h2>
+<p>ONNX lets you skip an optional input in two ways. You can leave it off the end of the input list, <code>Conv(x, w)</code>, or you can write it as an empty name, <code>Conv(x, w, "")</code>. Both mean "no bias", and both are valid.</p>
+<p>ONNX Runtime's Conv+BatchNormalization, Conv+Add and Conv+Mul fusions checked for a bias with <code>InputDefs().size() == 3</code>. With <code>""</code> the Conv has three input defs, so the fusion took the "has bias" path. It then asked whether the bias was a constant, got "no" for the empty input, and skipped the fusion at every optimization level (<a href="https://github.com/microsoft/onnxruntime/issues/34139">microsoft/onnxruntime#34139</a>). Treating it as "no bias" isn't enough either. The no-bias path appended the new bias with a helper that only adds an input at the end of the list, and slot 2 was already taken by <code>""</code>.</p>
+<p>The fix (<a href="https://github.com/microsoft/onnxruntime/pull/34141">microsoft/onnxruntime#34141</a>) checks <code>InputDefs()[2]-&gt;Exists()</code> as well and sets the new bias with a helper that fills an empty slot or an omitted one.</p>
+<p><strong>Rule for graph passes:</strong> an optional input is present only if the slot exists <em>and</em> has a non-empty name. Counting inputs is not enough.</p>
+
+<h2>2. A sliced Shape only needs the dims it selects</h2>
+<p>Since opset 15, <code>Shape</code> takes <code>start</code> and <code>end</code>, so <code>Shape(x, start=1)</code> returns every dim except the first. Exported models do this a lot, usually to keep a symbolic batch dim out of a <code>Reshape</code>.</p>
+<p>ONNX Runtime's constant folding collected the values of <em>all</em> dims first and gave up at the first symbolic one, before it applied the slice. For <code>x: [N, 3]</code>, <code>Shape(x, start=1, end=2)</code> is always <code>[3]</code>, but it was not folded because of <code>N</code> (<a href="https://github.com/microsoft/onnxruntime/issues/34140">microsoft/onnxruntime#34140</a>). The fix (<a href="https://github.com/microsoft/onnxruntime/pull/34142">microsoft/onnxruntime#34142</a>) clamps <code>start</code>/<code>end</code> against the rank first and only requires the selected dims to be known:</p>
+<table>
+<thead><tr><th>Input <code>[N, 3, 4, M]</code>, start, end</th><th>Before</th><th>After</th></tr></thead>
+<tbody>
+<tr><td>1, 3</td><td>not folded</td><td>folded to <code>[3, 4]</code></td></tr>
+<tr><td>-3, -1</td><td>not folded</td><td>folded to <code>[3, 4]</code></td></tr>
+<tr><td>0, 2 (includes <code>N</code>)</td><td>not folded</td><td>not folded</td></tr>
+</tbody>
+</table>
+<p><strong>Rule for graph passes:</strong> apply an op's own attributes before you decide that its input is "not static enough".</p>
+
+<h2>3. onnx before 1.21 rejects <code>Constant(value_ints)</code> as Pad's pads</h2>
+<p>This one was my own bug. I wrote a torchlib implementation of <code>adaptive_avg_pool</code> for onnxscript (<a href="https://github.com/microsoft/onnxscript/pull/3201">microsoft/onnxscript#3201</a>), and it uses a <code>Pad</code> whose <code>pads</code> came from <code>op.Constant(value_ints=[...])</code>. All tests passed locally. In CI, almost every job failed with:</p>
+<pre><code>[ShapeInferenceError] 'pads' input must be a 1D (shape: [2 * num_axes]) tensor of type int64</code></pre>
+<p>CI pins <code>onnx==1.18</code>, and I had onnx 1.23 locally. A minimal model with only a Pad shows the difference. The <code>pads</code> are the same six int64 values, built in two ways:</p>
+<table>
+<thead><tr><th>onnx</th><th><code>Constant(value_ints=...)</code></th><th><code>Constant(value=tensor)</code></th></tr></thead>
+<tbody>
+<tr><td>1.18, 1.19, 1.20</td><td>shape inference error</td><td>OK</td></tr>
+<tr><td>1.21, 1.23</td><td>OK</td><td>OK</td></tr>
+</tbody>
+</table>
+<p>Passing the pads as a tensor works on every version. More generally, <strong>run your tests with the dependency versions that CI pins</strong>, not only the ones in your local environment. I now keep a virtual environment that matches the onnxscript CI pins and run new changes there before I push.</p>
+
+<h2>A pattern</h2>
+<p>All three bugs hide behind a working default case. Most models omit an unused bias instead of writing <code>""</code>, most Shape nodes take the whole shape, and most developers have a recent onnx. Tests that only build the common form pass. For each of these fixes, the useful test was the one that built the uncommon but valid form on purpose and compared it with the common one.</p>
+<p><em>I used Claude (Anthropic) to help write the fixes, build the reproductions and draft this post. I reviewed the results and ran the tests myself.</em></p>
+<hr />
+<p><em>Qiming Bao is an AI researcher in Auckland, New Zealand, working on LLM reasoning and model deployment. He received his PhD from the University of Auckland's Strong AI Lab and contributes to the PyTorch ONNX exporter, ONNX Runtime, ONNX Runtime GenAI and Microsoft PyRIT.</em></p>
+</main>
+</body>
+</html>

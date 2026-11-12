@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ONNX 图里三个容易被工具忽略的细节 | 包启明</title>
+<meta name="description" content="空名字的可选输入不等于省略的输入，带切片的 Shape 只需要选中的维度已知，onnx 1.21 之前不接受用 Constant(value_ints) 作为 Pad 的 pads。这周每一个都让一个实际的工具出了问题。">
+<link rel="canonical" href="https://14h034160212.github.io/blog/onnx-graph-edge-cases-zh.html">
+<link rel="alternate" hreflang="en" href="https://14h034160212.github.io/blog/onnx-graph-edge-cases.html">
+<link rel="alternate" hreflang="zh-CN" href="https://14h034160212.github.io/blog/onnx-graph-edge-cases-zh.html">
+<link rel="icon" type="image/jpeg" href="../qiming.jpg">
+<style>
+:root { --fg:#1f2328; --muted:#59636e; --bg:#ffffff; --code:#f6f8fa; --line:#d1d9e0; --link:#0969da; }
+@media (prefers-color-scheme: dark) { :root { --fg:#e6edf3; --muted:#9198a1; --bg:#0d1117; --code:#161b22; --line:#3d444d; --link:#4493f8; } }
+body { font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial, sans-serif; color:var(--fg); background:var(--bg); margin:0; line-height:1.75; }
+main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: 1.9rem; line-height:1.3; margin: 0.4em 0 0.2em; }
+h2 { margin-top: 2em; border-bottom:1px solid var(--line); padding-bottom:.2em; }
+a { color: var(--link); }
+.meta { color: var(--muted); font-size: .92rem; }
+table { border-collapse: collapse; margin: 1em 0; display:block; overflow-x:auto; }
+th, td { border: 1px solid var(--line); padding: 6px 12px; }
+th { background: var(--code); }
+pre { background: var(--code); padding: 12px; overflow-x: auto; border-radius: 6px; }
+code { background: var(--code); padding: 1px 4px; border-radius: 4px; font-size: .92em; }
+pre code { padding: 0; }
+</style>
+</head>
+<body>
+<main>
+<p class="meta"><a href="../index.html">Qiming Bao</a> · Blog · 2026 年 11 月 12 日 · <a href="onnx-graph-edge-cases.html">English</a> / 中文</p>
+<h1>ONNX 图里三个容易被工具忽略的细节</h1>
+<p>这周我修了 ONNX 工具链里的三个 bug：两个在 ONNX Runtime 的图优化器里，一个在我自己写的导出代码里。它们都没有让程序崩溃，只是让模型跑得比应有的慢一点，或者让测试只在 CI 上失败。三个问题都来自 ONNX 格式里一些很小、写图优化或导出器时容易忽略的细节。</p>
+
+<h2>1. 空名字的可选输入，不等于省略的输入</h2>
+<p>ONNX 里省略一个可选输入有两种写法：直接不写在输入列表末尾，<code>Conv(x, w)</code>；或者写成空名字，<code>Conv(x, w, "")</code>。两种都表示"没有 bias"，也都是合法的。</p>
+<p>ONNX Runtime 的 Conv+BatchNormalization、Conv+Add 和 Conv+Mul 融合用 <code>InputDefs().size() == 3</code> 判断有没有 bias。写成 <code>""</code> 时 Conv 有三个输入，于是走了"有 bias"的分支；接着检查 bias 是不是常量，空输入当然不是，融合就在所有优化级别下都被跳过了（<a href="https://github.com/microsoft/onnxruntime/issues/34139">microsoft/onnxruntime#34139</a>）。只把它当成"没有 bias"还不够：没有 bias 的分支用的辅助函数只能往输入列表末尾追加新 bias，而第 3 个位置已经被 <code>""</code> 占了。</p>
+<p>修复（<a href="https://github.com/microsoft/onnxruntime/pull/34141">microsoft/onnxruntime#34141</a>）同时检查 <code>InputDefs()[2]-&gt;Exists()</code>，并改用一个能填充空位置、也能处理省略情况的辅助函数来设置新的 bias。</p>
+<p><strong>写图优化的规则</strong>：可选输入只有在位置存在<em>并且</em>名字非空时才算存在，只数输入个数是不够的。</p>
+
+<h2>2. 带切片的 Shape 只需要选中的维度已知</h2>
+<p>从 opset 15 开始，<code>Shape</code> 支持 <code>start</code> 和 <code>end</code>，比如 <code>Shape(x, start=1)</code> 返回除第一维以外的所有维度。导出的模型里经常这样用，通常是为了让符号化的 batch 维不进入 <code>Reshape</code>。</p>
+<p>ONNX Runtime 的常量折叠先收集<em>所有</em>维度的值，遇到第一个符号维度就放弃，然后才应用切片。对于 <code>x: [N, 3]</code>，<code>Shape(x, start=1, end=2)</code> 永远是 <code>[3]</code>，却因为 <code>N</code> 没有被折叠（<a href="https://github.com/microsoft/onnxruntime/issues/34140">microsoft/onnxruntime#34140</a>）。修复（<a href="https://github.com/microsoft/onnxruntime/pull/34142">microsoft/onnxruntime#34142</a>）先按秩对 <code>start</code>/<code>end</code> 做截断，再只要求选中的维度已知：</p>
+<table>
+<thead><tr><th>输入 <code>[N, 3, 4, M]</code>，start, end</th><th>修复前</th><th>修复后</th></tr></thead>
+<tbody>
+<tr><td>1, 3</td><td>不折叠</td><td>折叠为 <code>[3, 4]</code></td></tr>
+<tr><td>-3, -1</td><td>不折叠</td><td>折叠为 <code>[3, 4]</code></td></tr>
+<tr><td>0, 2（包含 <code>N</code>）</td><td>不折叠</td><td>不折叠</td></tr>
+</tbody>
+</table>
+<p><strong>写图优化的规则</strong>：先应用算子自己的属性，再判断它的输入"是不是不够静态"。</p>
+
+<h2>3. onnx 1.21 之前不接受用 <code>Constant(value_ints)</code> 作为 Pad 的 pads</h2>
+<p>这个是我自己的 bug。我给 onnxscript 写了一个 <code>adaptive_avg_pool</code> 的 torchlib 实现（<a href="https://github.com/microsoft/onnxscript/pull/3201">microsoft/onnxscript#3201</a>），里面有一个 <code>Pad</code>，它的 <code>pads</code> 来自 <code>op.Constant(value_ints=[...])</code>。本地测试全部通过，CI 上几乎所有任务都失败了：</p>
+<pre><code>[ShapeInferenceError] 'pads' input must be a 1D (shape: [2 * num_axes]) tensor of type int64</code></pre>
+<p>CI 固定使用 <code>onnx==1.18</code>，而我本地是 onnx 1.23。用一个只包含 Pad 的最小模型就能看出区别，<code>pads</code> 是同样的六个 int64 值，只是构造方式不同：</p>
+<table>
+<thead><tr><th>onnx</th><th><code>Constant(value_ints=...)</code></th><th><code>Constant(value=tensor)</code></th></tr></thead>
+<tbody>
+<tr><td>1.18、1.19、1.20</td><td>形状推断报错</td><td>正常</td></tr>
+<tr><td>1.21、1.23</td><td>正常</td><td>正常</td></tr>
+</tbody>
+</table>
+<p>把 pads 写成张量在所有版本上都能工作。更一般的教训是：<strong>用 CI 固定的依赖版本跑测试</strong>，而不只是用本地环境里的版本。我现在保留了一个和 onnxscript CI 版本一致的虚拟环境，推送之前先在里面跑一遍。</p>
+
+<h2>一个共同点</h2>
+<p>这三个 bug 都藏在一个"默认情况能正常工作"的背后：大多数模型直接省略不用的 bias，而不是写 <code>""</code>；大多数 Shape 节点取完整的形状；大多数开发者装的是较新的 onnx。只构造常见写法的测试都能通过。对这三个修复来说，真正有用的测试是专门构造那种少见但合法的写法，再和常见写法对比。</p>
+<p><em>编写修复、构造复现和撰写本文时，我使用了 Claude（Anthropic）辅助。所有结果都经过我本人审阅，测试也由我亲自运行。</em></p>
+<hr />
+<p><em>包启明，现居新西兰奥克兰的 AI 研究者，研究方向为大模型推理与模型部署。博士毕业于奥克兰大学 Strong AI Lab，参与 PyTorch ONNX 导出器、ONNX Runtime、ONNX Runtime GenAI 和 Microsoft PyRIT 等开源项目的贡献。</em></p>
+</main>
+</body>
+</html>
