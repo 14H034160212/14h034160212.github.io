@@ -71,7 +71,7 @@ onnx_program = torch.onnx.export(M(), (x,), dynamic_shapes=dyn, dynamo=True)
 <ul>
 <li>After exporting with dynamic shapes, run the ONNX model at <strong>two or three sizes other than the example</strong> and compare with PyTorch. One run at the example size proves nothing about dynamic axes.</li>
 <li>If your model uses <code>AdaptiveAvgPool2d</code> with an output size other than 1, either export with static spatial sizes or check the exported <code>AveragePool</code> attributes. An output size of 1 passed my test.</li>
-<li>Follow <a href="https://github.com/pytorch/pytorch/issues/204405">pytorch/pytorch#204405</a> for the fix. I proposed a shape-dynamic torchlib implementation, built from <code>CumSum</code> and <code>Gather</code>, and a general check in the exporter.</li>
+<li>Follow <a href="https://github.com/pytorch/pytorch/issues/204405">pytorch/pytorch#204405</a> for the fix. I proposed a shape-dynamic torchlib implementation, built from <code>CumSum</code> and <code>Gather</code>, and a general check in the exporter. The implementation is now up for review as <a href="https://github.com/microsoft/onnxscript/pull/3201">microsoft/onnxscript#3201</a>. With it, VGG11 exported with dynamic height and width matches PyTorch at 224, 256 and 448.</li>
 </ul>
 <p><em>I used Claude (Anthropic) to help build the tests, investigate the findings and draft this post. I reviewed the results and ran the checks myself.</em></p>
 <hr />

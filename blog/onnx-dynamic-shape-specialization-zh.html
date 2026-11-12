@@ -71,7 +71,7 @@ onnx_program = torch.onnx.export(M(), (x,), dynamic_shapes=dyn, dynamo=True)
 <ul>
 <li>用动态形状导出后，<strong>用两三个和示例不同的尺寸</strong>运行 ONNX 模型，并和 PyTorch 对比。只在示例尺寸下跑一次，对动态维度什么也证明不了。</li>
 <li>如果模型里用了输出尺寸不是 1 的 <code>AdaptiveAvgPool2d</code>，要么用静态的空间尺寸导出，要么检查导出后 <code>AveragePool</code> 的属性。输出尺寸为 1 的情况在我的测试里是通过的。</li>
-<li>修复进展可以关注 <a href="https://github.com/pytorch/pytorch/issues/204405">pytorch/pytorch#204405</a>。我在里面提出了一个支持动态形状的 torchlib 实现（基于 <code>CumSum</code> 和 <code>Gather</code>），以及在导出器里加一个通用检查。</li>
+<li>修复进展可以关注 <a href="https://github.com/pytorch/pytorch/issues/204405">pytorch/pytorch#204405</a>。我在里面提出了一个支持动态形状的 torchlib 实现（基于 <code>CumSum</code> 和 <code>Gather</code>），以及在导出器里加一个通用检查。这个实现已经提交为 <a href="https://github.com/microsoft/onnxscript/pull/3201">microsoft/onnxscript#3201</a>，正在等待审阅。加上它之后，用动态高宽导出的 VGG11 在 224、256 和 448 下都和 PyTorch 一致。</li>
 </ul>
 <p><em>编写测试、排查这些问题和撰写本文时，我使用了 Claude（Anthropic）辅助。所有结果都经过我本人审阅，各项检查也由我亲自运行。</em></p>
 <hr />
