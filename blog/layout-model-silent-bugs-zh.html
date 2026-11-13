@@ -46,7 +46,7 @@ pre code { padding: 0; }
 </tbody>
 </table>
 <p>按 README 的写法，所有页面在模型看来都一样。修复只需要两个参数。有一个坑要注意：那组均值看起来像 Detectron 惯用的 BGR 顺序常数，但 PaddleNLP 送进去的是 RGB，模型也是这样预训练的，所以不要转成 BGR。已报告为 <a href="https://github.com/NormXU/ERNIE-Layout-Pytorch/issues/26">NormXU/ERNIE-Layout-Pytorch#26</a>，修复见 <a href="https://github.com/NormXU/ERNIE-Layout-Pytorch/pull/27">#27</a>。</p>
-<p><strong>如果你已经用 README 的预处理微调过模型</strong>，这些模型请继续用原来的预处理，或者重新微调。我在 FUNSD 上分别用两种预处理微调 ERNIE-Layout（3 个种子），再用两种预处理分别评估每个模型。用 README 预处理训练的模型，用同样的预处理时 F1 为 84.19，换成修复后的预处理会降到 82.78（−1.4，配对 t 检验 p = 0.03）。用修复后的预处理重新微调得到 84.55，比旧设置略高；但 FUNSD 很少依赖图像，3 个种子下这个差异不显著。训练和推理的预处理必须一起改。</p>
+<p><strong>如果你已经用 README 的预处理微调过模型</strong>，这些模型请继续用原来的预处理，或者重新微调。我在 FUNSD 上分别用两种预处理微调 ERNIE-Layout（3 个种子），再用两种预处理分别评估每个模型。用 README 预处理训练的模型，用同样的预处理时 F1 为 84.19，换成修复后的预处理会降到 82.78（−1.4，配对 t 检验 p = 0.03）。用修复后的预处理重新微调得到 84.55，比旧设置略高；但 FUNSD 很少依赖图像，3 个种子下这个差异不显著。训练和推理的预处理必须一起改（W&amp;B：<a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/twwolvqo">README 预处理</a>、<a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/8dazg18k">修复后的预处理</a>）。</p>
 <p>LayoutLMv3 本身没有这个问题：它的模型内部不做归一化，处理器的 0.5 / 0.5 也和微软原版微调代码一致。只有 ERNIE-Layout 借用 LayoutLMv3 的处理器时才会出问题。</p>
 
 <h2>2. 冻结编码器时 BatchNorm 统计量仍在变化</h2>
