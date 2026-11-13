@@ -59,6 +59,7 @@ pre code { padding: 0; }
 </tbody>
 </table>
 <p>2048 个 token 读完整页，比截断高 24 分，比滑动窗口高 1.6 分。可能的原因是：窗口只能看到表格的一部分，而读完整页时每一行都能看到表头和其他行。1024 在这里不够，三分之一的页面更长，尾部仍然被截掉。实验记录在 W&amp;B 上（<a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/rqakzlmm">512</a>、<a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/xsm2yq39">窗口</a>、<a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/yax56big">1024</a>、<a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/eybwos7p">2048</a>）。</p>
+<p><strong>ERNIE-Layout</strong>（通过社区的 PyTorch 移植版，用同样的位置复制）在同样的页面上结论一致：截断 70.87 ± 0.18，滑动窗口 92.78 ± 0.30，位置扩展到 2048 为 92.88 ± 0.17（W&amp;B：<a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/7hwey8v6">512</a>、<a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/4b0td6ek">窗口</a>、<a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/ax6vuu0v">2048</a>）。读完整页同样比截断高 22 分，但对 ERNIE-Layout 来说和滑动窗口打平（+0.10，配对 t 检验 p = 0.28）；而 LayoutLMv3 比窗口高 1.6 分，5 个种子全部更好（p = 0.007）。</p>
 <p>速度靠动态补齐：每个批次只补齐到其中最长的文档，而不是补到 2048，所以短页面的开销和 512 的模型一样，只有真正长的页面才多花时间。2048 的微调时间是截断的 1.5 倍，而不是 4 倍。</p>
 
 <h2>显存究竟花在哪里</h2>
@@ -73,6 +74,7 @@ pre code { padding: 0; }
 <tr><td><strong>SDPA，查找表构建偏置</strong></td><td class="n">0.69 GB / 35 ms</td><td class="n"><strong>0.80 GB / 66 ms</strong></td><td class="n"><strong>1.57 GB / 151 ms</strong></td><td class="n">4.58 GB / 484 ms</td></tr>
 </tbody>
 </table>
+<p>为了确认查找表在真实数据上不改变任何结果，我用一个在 VRDU 上以 2048 长度微调好的模型，分别用四种注意力实现评估 774 页测试集：之前的 SDPA、查找表、按查询分块的 SDPA 和 FlexAttention。四种实现的 F1 都是 92.96，每个标注 token 的预测都一样。在这次评估中（fp32，批大小 8，补齐到 2048），查找表也是最快的，显存 7.5 GB，原 SDPA 是 14.8 GB（<a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/wj2p542x">W&amp;B</a>）。</p>
 <p>2048 个 token 只需要 0.80 GB，512 时是 0.69 GB，而且比之前的 SDPA 版本更快。在 2048 长度、批大小 2 的条件下微调需要 7.05 GB，开启梯度检查点后为 3.99 GB；4096 加梯度检查点为 6.71 GB。</p>
 
 <h2>FlexAttention，以及为什么不推荐在 V100 上用</h2>
@@ -86,7 +88,7 @@ pre code { padding: 0; }
 
 <h2>接下来</h2>
 <ul>
-<li>ERNIE-Layout 在同样页面上的结果（正在跑，出来后补到这里）。在 FUNSD 上同样的方法对它也有效，而移植版的 RoPE 外推会崩到 28 F1。</li>
+<li>在第二个长文档数据集上验证，并测试 4096 及更长的准确率：VRDU 里没有超过 2048 的标注词。</li>
 <li>在 LSG 和 Longformer 的长文本基准上做对比，检验"复制位置 + 精确注意力"对纯文本 encoder 是否同样成立。</li>
 <li>像 FlashBias（NeurIPS 2025）处理其他偏置那样，把版面偏置分解成低秩项拼进 query 和 key，彻底不构建 n × n 偏置。</li>
 <li>把 SDPA 和精简的偏置构建贡献给 transformers 的 LayoutLMv3（<a href="https://github.com/huggingface/transformers/issues/35467">#35467</a>），并在真正的 V100 上确认这些数字。</li>

@@ -59,6 +59,7 @@ pre code { padding: 0; }
 </tbody>
 </table>
 <p>Reading the whole page at 2048 tokens is 24 points better than truncation and 1.6 points better than windows. The likely reason is that a window sees only part of a table, while the full page lets every row attend to the column headers and the other rows. 1024 tokens is not enough here: a third of the pages are longer, and their tails are still cut. Runs are logged on W&amp;B (<a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/rqakzlmm">512</a>, <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/xsm2yq39">windows</a>, <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/yax56big">1024</a>, <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/eybwos7p">2048</a>).</p>
+<p><strong>ERNIE-Layout</strong> (through the community PyTorch port, with the same position tiling) shows the same picture on the same pages: truncation 70.87 ± 0.18, windows 92.78 ± 0.30, positions extended to 2048 92.88 ± 0.17 (W&amp;B <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/7hwey8v6">512</a>, <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/4b0td6ek">windows</a>, <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/ax6vuu0v">2048</a>). Reading the whole page is again 22 points better than truncation, but for ERNIE-Layout it ties with windows (+0.10, paired p = 0.28), while for LayoutLMv3 the 1.6-point gain over windows held in all five seeds (p = 0.007).</p>
 <p>Speed comes from dynamic padding: each batch is padded to its longest document instead of to 2048, so short pages cost the same as with a 512-token model and only genuinely long pages cost more. Fine-tuning at 2048 took 1.5 times as long as truncation, not 4 times.</p>
 
 <h2>Where the memory actually goes</h2>
@@ -73,6 +74,7 @@ pre code { padding: 0; }
 <tr><td><strong>SDPA, bias from lookup tables</strong></td><td class="n">0.69 GB / 35 ms</td><td class="n"><strong>0.80 GB / 66 ms</strong></td><td class="n"><strong>1.57 GB / 151 ms</strong></td><td class="n">4.58 GB / 484 ms</td></tr>
 </tbody>
 </table>
+<p>To check that the lookup tables change nothing on real data, I took one model fine-tuned on VRDU at 2048 tokens and evaluated it on the 774 test pages with four attention implementations: the previous SDPA version, the lookup tables, SDPA over query blocks, and FlexAttention. All four gave F1 92.96 and the same prediction for every labelled token. In that evaluation (fp32, batch 8, padded to 2048) the lookup-table version was also the fastest and needed 7.5 GB against 14.8 GB (<a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/wj2p542x">W&amp;B</a>).</p>
 <p>At 2048 tokens the model needs 0.80 GB, against 0.69 GB at 512, and it is faster than the previous SDPA version. For fine-tuning at 2048 tokens with batch 2 it needs 7.05 GB, or 3.99 GB with gradient checkpointing; 4096 tokens fit in 6.71 GB with checkpointing.</p>
 
 <h2>FlexAttention, and why I don't recommend it for a V100</h2>
@@ -86,7 +88,7 @@ pre code { padding: 0; }
 
 <h2>Next</h2>
 <ul>
-<li>ERNIE-Layout on the same pages (running; I will add the results here). On FUNSD the same techniques worked for it, while its port's RoPE extrapolation collapsed to 28 F1.</li>
+<li>A second long-document dataset, and accuracy at 4096 tokens and beyond: VRDU has no labelled words past 2048.</li>
 <li>A comparison with LSG and Longformer on their long-text benchmarks, to test whether exact attention with copied positions holds up for plain-text encoders too.</li>
 <li>Factorising the layout biases into low-rank terms appended to the queries and keys, as FlashBias (NeurIPS 2025) does for other biases, so that no n × n bias is built at all.</li>
 <li>Bringing SDPA and the lean bias to LayoutLMv3 in transformers (<a href="https://github.com/huggingface/transformers/issues/35467">#35467</a>), and confirming the numbers on a real V100.</li>
