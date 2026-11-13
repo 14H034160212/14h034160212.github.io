@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Three silent bugs in fine-tuning LayoutLMv3 and ERNIE-Layout | Qiming Bao</title>
+<meta name="description" content="A doubled image normalisation that blinds ERNIE-Layout, BatchNorm statistics that change while the encoder is frozen, and relative position biases that transformers has not trained since v4.42. None of them raises an error.">
+<link rel="canonical" href="https://14h034160212.github.io/blog/layout-model-silent-bugs.html">
+<link rel="alternate" hreflang="en" href="https://14h034160212.github.io/blog/layout-model-silent-bugs.html">
+<link rel="alternate" hreflang="zh-CN" href="https://14h034160212.github.io/blog/layout-model-silent-bugs-zh.html">
+<link rel="icon" type="image/jpeg" href="../qiming.jpg">
+<style>
+:root { --fg:#1f2328; --muted:#59636e; --bg:#ffffff; --code:#f6f8fa; --line:#d1d9e0; --link:#0969da; }
+@media (prefers-color-scheme: dark) { :root { --fg:#e6edf3; --muted:#9198a1; --bg:#0d1117; --code:#161b22; --line:#3d444d; --link:#4493f8; } }
+body { font-family: -apple-system, "Segoe UI", Arial, sans-serif; color:var(--fg); background:var(--bg); margin:0; line-height:1.65; }
+main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: 1.9rem; line-height:1.25; margin: 0.4em 0 0.2em; }
+h2 { margin-top: 2em; border-bottom:1px solid var(--line); padding-bottom:.2em; }
+a { color: var(--link); }
+.meta { color: var(--muted); font-size: .92rem; }
+table { border-collapse: collapse; margin: 1em 0; display:block; overflow-x:auto; }
+th, td { border: 1px solid var(--line); padding: 6px 12px; }
+th { background: var(--code); }
+pre { background: var(--code); padding: 12px; overflow-x: auto; border-radius: 6px; }
+code { background: var(--code); padding: 1px 4px; border-radius: 4px; font-size: .92em; }
+pre code { padding: 0; }
+</style>
+</head>
+<body>
+<main>
+<p class="meta"><a href="../index.html">Qiming Bao</a> · Blog · 13 November 2026 · English / <a href="layout-model-silent-bugs-zh.html">中文</a></p>
+<h1>Three silent bugs in fine-tuning LayoutLMv3 and ERNIE-Layout</h1>
+<p>While adding long-document support to my <a href="https://github.com/14H034160212/layoutlmv3-pretraining">LayoutLMv3 pre-training repository</a>, I also brought in ERNIE-Layout through the community PyTorch port. Along the way I found three bugs. None of them raises an error or a warning, and each one quietly makes a model worse than it should be. I reported all three, with fixes.</p>
+
+<h2>1. ERNIE-Layout's image is normalised twice</h2>
+<p>ERNIE-Layout's visual backbone is a ResNet that normalises its input itself:</p>
+<pre><code>images_input = (images - self.pixel_mean) / self.pixel_std
+# pixel_mean = [103.53, 116.28, 123.675], pixel_std = [57.375, 57.12, 58.395]</code></pre>
+<p>Those constants expect pixels in 0-255. PaddleNLP, where the model comes from, feeds exactly that: the page decoded to RGB, resized to 224 x 224 and kept as 0-255 (<code>_str2im</code> followed by <code>_permute(image, to_bgr=False)</code>). The PyTorch port's README and examples, however, create the image processor as <code>LayoutLMv3ImageProcessor(apply_ocr=False)</code>. Its defaults rescale to [0, 1] and normalise with mean = std = 0.5, so the pixels are already in [-1, 1] before the backbone normalises them again.</p>
+<p>After the second normalisation every pixel sits near -1.97 with a standard deviation of 0.13: the model sees an almost black page. I measured what that does to the visual features on 8 FUNSD test pages:</p>
+<table>
+<thead><tr><th>Image processor</th><th>Backbone input mean / std</th><th>Cosine similarity of visual features between different pages</th></tr></thead>
+<tbody>
+<tr><td>Port README: <code>LayoutLMv3ImageProcessor(apply_ocr=False)</code></td><td>-1.97 / 0.133</td><td><strong>0.9993</strong> (mean)</td></tr>
+<tr><td>As PaddleNLP: <code>do_rescale=False, do_normalize=False</code></td><td>2.16 / 0.625</td><td>0.9398 (mean)</td></tr>
+</tbody>
+</table>
+<p>With the README's setting, every page looks the same to the model. The fix is two arguments. One trap: the mean values look like the BGR-ordered Detectron constants, but PaddleNLP feeds RGB, and the model was pre-trained that way, so do not convert to BGR. Reported as <a href="https://github.com/NormXU/ERNIE-Layout-Pytorch/issues/26">NormXU/ERNIE-Layout-Pytorch#26</a> with the fix in <a href="https://github.com/NormXU/ERNIE-Layout-Pytorch/pull/27">#27</a>.</p>
+<p>LayoutLMv3 itself does not have this problem. Its model applies no normalisation of its own, and its processor's 0.5 / 0.5 matches Microsoft's original fine-tuning code. The bug only appears when ERNIE-Layout borrows LayoutLMv3's processor.</p>
+
+<h2>2. BatchNorm statistics change while the encoder is frozen</h2>
+<p>A common recipe for continued pre-training is a <em>head warm-up</em>: freeze the encoder and train only the new heads for a while. I check that the encoder is bit-identical afterwards. For ERNIE-Layout it was not.</p>
+<p>The ResNet has 11 BatchNorm layers. In <code>model.train()</code> mode, BatchNorm updates its running mean and variance on every forward pass, whether or not its parameters require gradients. One forward pass with the encoder frozen changed the running statistics of all 11 layers. In fine-tuning with a batch of 2 pages, the pretrained statistics drift towards whatever those small batches contain.</p>
+<p>The fix is the one detection backbones usually use: keep BatchNorm in eval mode during training. With that, a head warm-up changed 0 encoder parameters and 0 buffers. The general lesson is that <code>requires_grad_(False)</code> freezes parameters, not buffers.</p>
+
+<h2>3. transformers stopped training LayoutLMv2/v3's relative position biases in v4.42</h2>
+<p>LayoutLMv3 adds learned 1D and 2D relative position biases to its attention scores. In transformers they are looked up like this:</p>
+<pre><code>with torch.no_grad():
+    rel_pos = self.rel_pos_bias.weight.t()[rel_pos].permute(0, 3, 1, 2)</code></pre>
+<p>The comment above it says the lookup "is independent of the input, no need to track gradients". The index does not depend on the input, but the result depends on the weight, so the three bias tables (<code>rel_pos_bias</code>, <code>rel_pos_x_bias</code>, <code>rel_pos_y_bias</code>) never receive a gradient. After a backward pass their <code>.grad</code> is <code>None</code>, while every other weight has one. They stay at their pretrained values in every fine-tuning or pre-training run.</p>
+<p>The history explains how this happened. #26139 replaced a one-hot plus <code>nn.Linear</code> computation with indexing to save memory. Indexing has a very slow backward, and training became about 5x slower (#30974). #30988 then wrapped the lookup in <code>no_grad</code> instead of reverting, which fixed the speed and silently stopped the training of the tables. It has been in every release since v4.42.0, for LayoutLMv2 and LayoutLMv3.</p>
+<p>The fix keeps the gradient without the slowdown. I measured a full training step of <code>LayoutLMv3ForTokenClassification</code> (base, 512 text tokens plus 197 patches, batch 2, A100):</p>
+<table>
+<thead><tr><th>Bias lookup</th><th>ms / step</th><th>Bias tables trained</th></tr></thead>
+<tbody>
+<tr><td>main: indexing under <code>no_grad</code></td><td>92.8</td><td>no</td></tr>
+<tr><td>indexing with gradients (the version that caused #30974)</td><td>477.0</td><td>yes</td></tr>
+<tr><td><code>F.embedding</code></td><td>107.9</td><td>yes</td></tr>
+<tr><td><strong><code>index_select</code></strong></td><td><strong>99.3</strong></td><td><strong>yes</strong></td></tr>
+</tbody>
+</table>
+<p><code>index_select</code>'s backward accumulates with <code>index_add_</code>, so the tables train again for about 7% more time per step, and the forward result is unchanged. Reported as <a href="https://github.com/huggingface/transformers/issues/50636">huggingface/transformers#50636</a>, with the fix and a regression test in <a href="https://github.com/huggingface/transformers/pull/50641">#50641</a>, which will be reopened once the issue is triaged.</p>
+
+<h2>How to catch this kind of bug</h2>
+<ul>
+<li><strong>Compare inputs, not only outputs.</strong> The ERNIE conversion was checked against PaddleNLP by feeding both the same tensor, which can never catch a preprocessing difference. Check what the first layer actually receives.</li>
+<li><strong>After freezing, check buffers as well as parameters.</strong> Snapshot <code>named_buffers()</code> before and after a frozen phase.</li>
+<li><strong>After a backward pass, check that every trainable parameter has a gradient.</strong> A parameter with <code>requires_grad=True</code> and <code>grad is None</code> is almost always a bug.</li>
+</ul>
+<p>All three checks are cheap enough to run as unit tests. The repository now has them.</p>
+<p><em>I used Claude (Anthropic) to help trace these bugs, run the measurements and draft this post. I reviewed the results and ran the checks myself.</em></p>
+<hr />
+<p><em>Qiming Bao is an AI researcher in Auckland, New Zealand, working on LLM reasoning and model deployment. He received his PhD from the University of Auckland's Strong AI Lab and contributes to the PyTorch ONNX exporter, ONNX Runtime, ONNX Runtime GenAI and Microsoft PyRIT.</em></p>
+</main>
+</body>
+</html>

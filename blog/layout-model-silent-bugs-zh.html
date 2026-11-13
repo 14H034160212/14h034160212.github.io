@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>微调 LayoutLMv3 和 ERNIE-Layout 时三个不报错的 bug | 包启明</title>
+<meta name="description" content="ERNIE-Layout 的图像被归一化两次导致模型看不见图像，冻结编码器时 BatchNorm 统计量仍在变化，以及 transformers 从 v4.42 起不再训练 LayoutLMv2/v3 的相对位置偏置。三个问题都不会报错。">
+<link rel="canonical" href="https://14h034160212.github.io/blog/layout-model-silent-bugs-zh.html">
+<link rel="alternate" hreflang="en" href="https://14h034160212.github.io/blog/layout-model-silent-bugs.html">
+<link rel="alternate" hreflang="zh-CN" href="https://14h034160212.github.io/blog/layout-model-silent-bugs-zh.html">
+<link rel="icon" type="image/jpeg" href="../qiming.jpg">
+<style>
+:root { --fg:#1f2328; --muted:#59636e; --bg:#ffffff; --code:#f6f8fa; --line:#d1d9e0; --link:#0969da; }
+@media (prefers-color-scheme: dark) { :root { --fg:#e6edf3; --muted:#9198a1; --bg:#0d1117; --code:#161b22; --line:#3d444d; --link:#4493f8; } }
+body { font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial, sans-serif; color:var(--fg); background:var(--bg); margin:0; line-height:1.75; }
+main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: 1.9rem; line-height:1.3; margin: 0.4em 0 0.2em; }
+h2 { margin-top: 2em; border-bottom:1px solid var(--line); padding-bottom:.2em; }
+a { color: var(--link); }
+.meta { color: var(--muted); font-size: .92rem; }
+table { border-collapse: collapse; margin: 1em 0; display:block; overflow-x:auto; }
+th, td { border: 1px solid var(--line); padding: 6px 12px; }
+th { background: var(--code); }
+pre { background: var(--code); padding: 12px; overflow-x: auto; border-radius: 6px; }
+code { background: var(--code); padding: 1px 4px; border-radius: 4px; font-size: .92em; }
+pre code { padding: 0; }
+</style>
+</head>
+<body>
+<main>
+<p class="meta"><a href="../index.html">Qiming Bao</a> · Blog · 2026 年 11 月 13 日 · <a href="layout-model-silent-bugs.html">English</a> / 中文</p>
+<h1>微调 LayoutLMv3 和 ERNIE-Layout 时三个不报错的 bug</h1>
+<p>在给我的 <a href="https://github.com/14H034160212/layoutlmv3-pretraining">LayoutLMv3 预训练仓库</a>加长文档支持时，我也通过社区的 PyTorch 移植版接入了 ERNIE-Layout。过程中发现了三个 bug：它们都不会报错或警告，却会悄悄让模型变差。三个都已经连同修复一起报告给了上游。</p>
+
+<h2>1. ERNIE-Layout 的图像被归一化了两次</h2>
+<p>ERNIE-Layout 的视觉骨干是一个 ResNet，它会自己对输入做归一化：</p>
+<pre><code>images_input = (images - self.pixel_mean) / self.pixel_std
+# pixel_mean = [103.53, 116.28, 123.675], pixel_std = [57.375, 57.12, 58.395]</code></pre>
+<p>这组常数期望的是 0-255 的像素。模型原本来自 PaddleNLP，它送进去的正是这样的输入：页面解码成 RGB，缩放到 224 x 224，保持 0-255（<code>_str2im</code> 之后 <code>_permute(image, to_bgr=False)</code>）。但 PyTorch 移植版的 README 和示例用的是 <code>LayoutLMv3ImageProcessor(apply_ocr=False)</code>，它默认先缩放到 [0, 1]，再用均值 = 标准差 = 0.5 归一化，像素在进入骨干网络之前就已经是 [-1, 1]，然后又被归一化一次。</p>
+<p>两次归一化之后，所有像素都集中在 -1.97 附近，标准差只有 0.13，模型看到的几乎是一张黑页。我在 8 张 FUNSD 测试页上测了它对视觉特征的影响：</p>
+<table>
+<thead><tr><th>图像处理器</th><th>骨干网络输入的均值 / 标准差</th><th>不同页面视觉特征的余弦相似度</th></tr></thead>
+<tbody>
+<tr><td>移植版 README：<code>LayoutLMv3ImageProcessor(apply_ocr=False)</code></td><td>-1.97 / 0.133</td><td><strong>0.9993</strong>（均值）</td></tr>
+<tr><td>与 PaddleNLP 一致：<code>do_rescale=False, do_normalize=False</code></td><td>2.16 / 0.625</td><td>0.9398（均值）</td></tr>
+</tbody>
+</table>
+<p>按 README 的写法，所有页面在模型看来都一样。修复只需要两个参数。有一个坑要注意：那组均值看起来像 Detectron 惯用的 BGR 顺序常数，但 PaddleNLP 送进去的是 RGB，模型也是这样预训练的，所以不要转成 BGR。已报告为 <a href="https://github.com/NormXU/ERNIE-Layout-Pytorch/issues/26">NormXU/ERNIE-Layout-Pytorch#26</a>，修复见 <a href="https://github.com/NormXU/ERNIE-Layout-Pytorch/pull/27">#27</a>。</p>
+<p>LayoutLMv3 本身没有这个问题：它的模型内部不做归一化，处理器的 0.5 / 0.5 也和微软原版微调代码一致。只有 ERNIE-Layout 借用 LayoutLMv3 的处理器时才会出问题。</p>
+
+<h2>2. 冻结编码器时 BatchNorm 统计量仍在变化</h2>
+<p>继续预训练有一个常见做法叫 <em>head 预热</em>：先冻结编码器，只训练新加的 head。我会检查预热后编码器是否逐位不变，ERNIE-Layout 却没有通过这个检查。</p>
+<p>它的 ResNet 有 11 个 BatchNorm 层。在 <code>model.train()</code> 模式下，BatchNorm 每次前向都会更新它的 running mean 和 variance，不管参数是否需要梯度。冻结编码器后只做一次前向，11 个层的统计量就全变了。用每批 2 页做微调时，预训练的统计量会被这些小批次的内容带偏。</p>
+<p>修复方法和检测类骨干网络的常规做法一样：训练时让 BatchNorm 保持 eval 模式。这样做之后，head 预热改变的编码器参数和 buffer 都是 0 个。更一般的教训是：<code>requires_grad_(False)</code> 冻结的是参数，不是 buffer。</p>
+
+<h2>3. transformers 从 v4.42 起不再训练 LayoutLMv2/v3 的相对位置偏置</h2>
+<p>LayoutLMv3 会在注意力分数上加上可学习的 1D 和 2D 相对位置偏置。transformers 里查表的写法是：</p>
+<pre><code>with torch.no_grad():
+    rel_pos = self.rel_pos_bias.weight.t()[rel_pos].permute(0, 3, 1, 2)</code></pre>
+<p>上面的注释说这次查表"和输入无关，不需要追踪梯度"。索引确实和输入无关，但结果依赖于权重，所以三张偏置表（<code>rel_pos_bias</code>、<code>rel_pos_x_bias</code>、<code>rel_pos_y_bias</code>）永远拿不到梯度：反向传播后它们的 <code>.grad</code> 是 <code>None</code>，其他权重都有梯度。在任何微调或预训练中，它们都停留在预训练时的值。</p>
+<p>它是怎么来的：#26139 为了省显存，把 one-hot 加 <code>nn.Linear</code> 的计算换成了索引。索引的反向传播非常慢，训练慢了大约 5 倍（#30974）。随后 #30988 没有回退，而是把查表包进了 <code>no_grad</code>，速度恢复了，偏置表也悄悄地不再训练了。从 v4.42.0 开始的每个版本都是这样，LayoutLMv2 和 LayoutLMv3 都受影响。</p>
+<p>修复要在保留梯度的同时避免变慢。我测了 <code>LayoutLMv3ForTokenClassification</code> 完整训练一步的时间（base，512 个文本 token 加 197 个图块，batch 2，A100）：</p>
+<table>
+<thead><tr><th>查表方式</th><th>每步毫秒</th><th>偏置表是否训练</th></tr></thead>
+<tbody>
+<tr><td>main：<code>no_grad</code> 里的索引</td><td>92.8</td><td>否</td></tr>
+<tr><td>带梯度的索引（导致 #30974 的版本）</td><td>477.0</td><td>是</td></tr>
+<tr><td><code>F.embedding</code></td><td>107.9</td><td>是</td></tr>
+<tr><td><strong><code>index_select</code></strong></td><td><strong>99.3</strong></td><td><strong>是</strong></td></tr>
+</tbody>
+</table>
+<p><code>index_select</code> 的反向传播用 <code>index_add_</code> 累加梯度，偏置表重新开始训练，每步只多大约 7% 的时间，前向结果不变。已报告为 <a href="https://github.com/huggingface/transformers/issues/50636">huggingface/transformers#50636</a>，修复和回归测试见 <a href="https://github.com/huggingface/transformers/pull/50641">#50641</a>，等 issue 被分类后会重新打开。</p>
+
+<h2>怎样发现这类 bug</h2>
+<ul>
+<li><strong>对比输入，而不只是输出。</strong>ERNIE 的转换是通过给 PaddleNLP 和移植版喂同一个张量来验证的，这种比较永远发现不了预处理的差异。要检查第一层实际收到的是什么。</li>
+<li><strong>冻结之后，除了参数也要检查 buffer。</strong>在冻结阶段前后各记录一次 <code>named_buffers()</code>。</li>
+<li><strong>反向传播后，检查每个可训练参数都有梯度。</strong><code>requires_grad=True</code> 但 <code>grad is None</code> 几乎一定是 bug。</li>
+</ul>
+<p>这三项检查都很便宜，完全可以写成单元测试，仓库里现在已经有了。</p>
+<p><em>排查这些 bug、做测量和撰写本文时，我使用了 Claude（Anthropic）辅助。所有结果都经过我本人审阅，检查也由我亲自运行。</em></p>
+<hr />
+<p><em>包启明，现居新西兰奥克兰的 AI 研究者，研究方向为大模型推理与模型部署。博士毕业于奥克兰大学 Strong AI Lab，参与 PyTorch ONNX 导出器、ONNX Runtime、ONNX Runtime GenAI 和 Microsoft PyRIT 等开源项目的贡献。</em></p>
+</main>
+</body>
+</html>
