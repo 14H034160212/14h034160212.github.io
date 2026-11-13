@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>不用预训练，在 16GB 显卡上用 LayoutLMv3 处理长文档 | 包启明</title>
+<meta name="description">LayoutLMv3 只能读 512 个 token，在行项目表格类页面上会丢掉 41% 的字段。复制位置编码、用查找表构建相对位置偏置后，它能用接近 512 的显存读 2048 个 token，不需要预训练：在 VRDU Ad-buy Forms 上 F1 为 92.5，截断为 68.3。">
+<link rel="canonical" href="https://14h034160212.github.io/blog/long-documents-layoutlmv3-16gb-zh.html">
+<link rel="alternate" hreflang="en" href="https://14h034160212.github.io/blog/long-documents-layoutlmv3-16gb.html">
+<link rel="alternate" hreflang="zh-CN" href="https://14h034160212.github.io/blog/long-documents-layoutlmv3-16gb-zh.html">
+<link rel="icon" type="image/jpeg" href="../qiming.jpg">
+<style>
+:root { --fg:#1f2328; --muted:#59636e; --bg:#ffffff; --code:#f6f8fa; --line:#d1d9e0; --link:#0969da; }
+@media (prefers-color-scheme: dark) { :root { --fg:#e6edf3; --muted:#9198a1; --bg:#0d1117; --code:#161b22; --line:#3d444d; --link:#4493f8; } }
+body { font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial, sans-serif; color:var(--fg); background:var(--bg); margin:0; line-height:1.75; }
+main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: 1.9rem; line-height:1.3; margin: 0.4em 0 0.2em; }
+h2 { margin-top: 2em; border-bottom:1px solid var(--line); padding-bottom:.2em; }
+a { color: var(--link); }
+.meta { color: var(--muted); font-size: .92rem; }
+table { border-collapse: collapse; margin: 1em 0; display:block; overflow-x:auto; }
+th, td { border: 1px solid var(--line); padding: 6px 12px; }
+th { background: var(--code); }
+td.n { text-align: right; }
+pre { background: var(--code); padding: 12px; overflow-x: auto; border-radius: 6px; }
+code { background: var(--code); padding: 1px 4px; border-radius: 4px; font-size: .92em; }
+pre code { padding: 0; }
+</style>
+</head>
+<body>
+<main>
+<p class="meta"><a href="../index.html">Qiming Bao</a> · Blog · 2026 年 11 月 13 日 · <a href="long-documents-layoutlmv3-16gb.html">English</a> / 中文</p>
+<h1>不用预训练，在 16GB 显卡上用 LayoutLMv3 处理长文档</h1>
+<p>LayoutLMv3 最多只能读 512 个文本 token。收据这类短文档没问题，但一页账单或订单常有几十行明细，往往超过 1000 个 token，第 512 个 token 之后的内容模型根本看不到。我想要一个能读完整页的版本，并且满足三个条件：不额外预训练；能在 16GB 的 V100 上推理；显存和速度接近 512 的模型。本文介绍最后行之有效的做法，代码在我的 <a href="https://github.com/14H034160212/layoutlmv3-pretraining">layoutlmv3-pretraining 仓库</a>。</p>
+
+<h2>截断到底丢了多少？</h2>
+<p>常用的 FUNSD 太短，看不出差别：50 张测试表单里只有 4 张超过 512 个 token。我改用 Google 的富版面文档基准 <a href="https://github.com/google-research-datasets/vrdu">VRDU</a> 中的 Ad-buy Forms：电视广告订单，每页是一张行项目表格，标注了频道、节目、日期、金额等 14 个字段。我把每一页转成 token 分类任务（字段的 BIO 标签）。</p>
+<table>
+<thead><tr><th>VRDU Ad-buy 测试集（774 页）</th><th>数值</th></tr></thead>
+<tbody>
+<tr><td>页面长度：中位数 / 90 分位 / 最长</td><td class="n">829 / 1,471 / 5,105 个 token</td></tr>
+<tr><td>超过 512 个 token 的页面</td><td class="n">77%</td></tr>
+<tr><td>截断到 512 / 1024 / 2048 时丢失的标注词</td><td class="n">40.8% / 5.5% / 0%</td></tr>
+</tbody>
+</table>
+<p>只读 512 个 token 时，模型要标注的词有四成根本看不到。</p>
+
+<h2>不预训练，读更长的页面</h2>
+<p>LayoutLMv3 读不了 512 以上有两个原因：它只学过 512 个位置编码；注意力的显存随长度的平方增长。</p>
+<p><strong>位置。</strong>我把 512 个预训练的一维位置编码重复拼接到更长（Longformer 用过的复制初始化），然后照常在任务上微调，没有训练任何别的东西。这个做法效果不错，是因为 LayoutLMv3 还有二维版面编码和相对位置偏置，它们不受长度影响。另一种做法是带重叠的 512 滑动窗口，再按词合并预测。</p>
+<p><strong>结果</strong>（LayoutLMv3-base，微调 2000 步，批大小 2，5 个随机种子，每个词都计分）：</p>
+<table>
+<thead><tr><th>LayoutLMv3</th><th>F1 × 100</th><th>5 个种子的耗时</th></tr></thead>
+<tbody>
+<tr><td>截断到 512</td><td class="n">68.31 ± 0.13</td><td class="n">21.5 分钟</td></tr>
+<tr><td>512 滑动窗口，步长重叠 128</td><td class="n">90.97 ± 0.65</td><td class="n">25.8 分钟</td></tr>
+<tr><td>位置扩展到 1024</td><td class="n">89.87 ± 0.13</td><td class="n">26.8 分钟</td></tr>
+<tr><td><strong>位置扩展到 2048</strong></td><td class="n"><strong>92.52 ± 0.11</strong></td><td class="n">31.9 分钟</td></tr>
+</tbody>
+</table>
+<p>2048 个 token 读完整页，比截断高 24 分，比滑动窗口高 1.6 分。可能的原因是：窗口只能看到表格的一部分，而读完整页时每一行都能看到表头和其他行。1024 在这里不够，三分之一的页面更长，尾部仍然被截掉。实验记录在 W&amp;B 上（<a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/rqakzlmm">512</a>、<a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/xsm2yq39">窗口</a>、<a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/yax56big">1024</a>、<a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/eybwos7p">2048</a>）。</p>
+<p>速度靠动态补齐：每个批次只补齐到其中最长的文档，而不是补到 2048，所以短页面的开销和 512 的模型一样，只有真正长的页面才多花时间。2048 的微调时间是截断的 1.5 倍，而不是 4 倍。</p>
+
+<h2>显存究竟花在哪里</h2>
+<p>LayoutLMv3 会根据两个 token 的一维距离，以及它们在页面上的水平和垂直距离，给每个注意力分数加上可学习的偏置。transformers 的实现是先构建 n × n 的距离矩阵，用 fp32 计算对数分桶，再从偏置表里取值。我本以为 n × n 的偏置本身是问题，其实不是：2048 个 token 加 197 个图块时，fp16 的偏置只有约 121 MB，分桶计算的 fp32 临时数据要大好几倍。</p>
+<p>分桶只取决于距离，而距离只有几千种可能。所以我按距离把每张表预先算好，直接用 fp16 查出合并后的偏置，12 层共用一份。结果是精确的，和 transformers 的注意力输出一致。注意力本身用 PyTorch 显存高效的 <code>scaled_dot_product_attention</code> 内核计算。</p>
+<p>推理，一份文档，fp16，总显存（含权重）/ 时间：</p>
+<table>
+<thead><tr><th>文本 token 数</th><th>512</th><th>2048</th><th>4096</th><th>8192</th></tr></thead>
+<tbody>
+<tr><td>transformers 原始注意力</td><td class="n">0.81 GB</td><td class="n">2.06 GB</td><td class="n">5.77 GB</td><td class="n">-</td></tr>
+<tr><td>SDPA，transformers 的分桶</td><td class="n">0.69 GB / 36 ms</td><td class="n">1.49 GB / 91 ms</td><td class="n">4.15 GB / 251 ms</td><td class="n">显存不足</td></tr>
+<tr><td><strong>SDPA，查找表构建偏置</strong></td><td class="n">0.69 GB / 35 ms</td><td class="n"><strong>0.80 GB / 66 ms</strong></td><td class="n"><strong>1.57 GB / 151 ms</strong></td><td class="n">4.58 GB / 484 ms</td></tr>
+</tbody>
+</table>
+<p>2048 个 token 只需要 0.80 GB，512 时是 0.69 GB，而且比之前的 SDPA 版本更快。在 2048 长度、批大小 2 的条件下微调需要 7.05 GB，开启梯度检查点后为 3.99 GB；4096 加梯度检查点为 6.71 GB。</p>
+
+<h2>FlexAttention，以及为什么不推荐在 V100 上用</h2>
+<p>我最先试的是 FlexAttention，它在注意力内核里现场计算偏置，从不构建 n × n 的张量。在 A100 上效果很好：2048 个 token 用 0.74 GB，8192 个用 0.87 GB。它的第一版比 SDPA 慢 4 倍，因为每个分数都要单独分桶；改成按距离查表后就快了，上面的查找表方法正是从这里来的。</p>
+<p>但 FlexAttention 用 Triton 编译内核，而新版 Triton 已不再使用 V100 等 Ampere 之前显卡的张量核心，所以在 V100 上不能指望 A100 上的速度。查找表方法用的是 PyTorch 自带的显存高效内核，会用到 V100 的张量核心，也不需要编译器。如果页面超过 8192 个 token，还可以按每块 512 个查询分块计算 SDPA：8192 个 token 只用 1.08 GB，代价是时间变成 2 到 4 倍。</p>
+<p>所有数字的前提：我是在 A100 上限制 15 GB 显存、只启用 V100 支持的注意力内核测得的，不是在真正的 V100 上。</p>
+
+<h2>哪些是新的，哪些不是</h2>
+<p>大部分组成部分都是已有的。Longformer（2020）证明了复制位置编码、不做额外预训练直接微调，在 WikiHop 上只比做了预训练的版本低约 0.6 分。LSG Attention（2022）用稀疏注意力把 BERT、RoBERTa、BART 转成长文本版本。LongEmbed（2024）不训练就扩展了 embedding 模型的长度。最近一篇论文（<a href="https://arxiv.org/abs/2611.01182">arXiv 2611.01182</a>，2026 年 10 月）用 Triton 写了在 FlashAttention 式内核里精确计算相对位置注意力的方法。</p>
+<p>我没有在别处找到的，是面向版面模型的这套组合：支持 LayoutLMv3 的一维和二维偏置；不预训练；完整注意力且精确（短页面的输出和原模型一样）；只用 PyTorch 自带内核，能在 V100 上运行；并在真正的长页面上验证。2020 年需要稀疏注意力，是因为完整注意力放不进显存；有了显存高效的内核，2048 到 8192 个 token 的完整注意力在 16GB 显卡上也放得下。</p>
+
+<h2>接下来</h2>
+<ul>
+<li>ERNIE-Layout 在同样页面上的结果（正在跑，出来后补到这里）。在 FUNSD 上同样的方法对它也有效，而移植版的 RoPE 外推会崩到 28 F1。</li>
+<li>在 LSG 和 Longformer 的长文本基准上做对比，检验"复制位置 + 精确注意力"对纯文本 encoder 是否同样成立。</li>
+<li>像 FlashBias（NeurIPS 2025）处理其他偏置那样，把版面偏置分解成低秩项拼进 query 和 key，彻底不构建 n × n 偏置。</li>
+<li>把 SDPA 和精简的偏置构建贡献给 transformers 的 LayoutLMv3（<a href="https://github.com/huggingface/transformers/issues/35467">#35467</a>），并在真正的 V100 上确认这些数字。</li>
+</ul>
+<p><em>编写代码、运行实验和撰写本文时，我使用了 Claude（Anthropic）辅助。所有结果和文章都经过我本人审阅。</em></p>
+<hr />
+<p><em>包启明，现居新西兰奥克兰的 AI 研究者，研究方向为大模型推理与模型部署。博士毕业于奥克兰大学 Strong AI Lab，参与 PyTorch ONNX 导出器、ONNX Runtime、ONNX Runtime GenAI 和 Microsoft PyRIT 等开源项目的贡献。</em></p>
+</main>
+</body>
+</html>
