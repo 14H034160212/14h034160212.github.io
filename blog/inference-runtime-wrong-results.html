@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Three inference-runtime bugs that return wrong numbers instead of errors | Qiming Bao</title>
+<meta name="description" content="A vLLM FP8 RMSNorm kernel that misreads strided inputs, an ONNX Runtime optimizer that crashes on Where(c, x, x), and ONNX Runtime MatMulNBits returning zeros when its scales are not constants. How each was found, narrowed down and fixed.">
+<link rel="canonical" href="https://14h034160212.github.io/blog/inference-runtime-wrong-results.html">
+<link rel="alternate" hreflang="en" href="https://14h034160212.github.io/blog/inference-runtime-wrong-results.html">
+<link rel="alternate" hreflang="zh-CN" href="https://14h034160212.github.io/blog/inference-runtime-wrong-results-zh.html">
+<link rel="icon" type="image/jpeg" href="../qiming.jpg">
+<style>
+:root { --fg:#1f2328; --muted:#59636e; --bg:#ffffff; --code:#f6f8fa; --line:#d1d9e0; --link:#0969da; }
+@media (prefers-color-scheme: dark) { :root { --fg:#e6edf3; --muted:#9198a1; --bg:#0d1117; --code:#161b22; --line:#3d444d; --link:#4493f8; } }
+body { font-family: -apple-system, "Segoe UI", Arial, sans-serif; color:var(--fg); background:var(--bg); margin:0; line-height:1.65; }
+main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: 1.9rem; line-height:1.25; margin: 0.4em 0 0.2em; }
+h2 { margin-top: 2em; border-bottom:1px solid var(--line); padding-bottom:.2em; }
+a { color: var(--link); }
+.meta { color: var(--muted); font-size: .92rem; }
+table { border-collapse: collapse; margin: 1em 0; display:block; overflow-x:auto; }
+th, td { border: 1px solid var(--line); padding: 6px 12px; }
+th { background: var(--code); }
+pre { background: var(--code); padding: 12px; overflow-x: auto; border-radius: 6px; }
+code { background: var(--code); padding: 1px 4px; border-radius: 4px; font-size: .92em; }
+pre code { padding: 0; }
+</style>
+</head>
+<body>
+<main>
+<p class="meta"><a href="../index.html">Qiming Bao</a> · Blog · 14 November 2026 · English / <a href="inference-runtime-wrong-results-zh.html">中文</a></p>
+<h1>Three inference-runtime bugs that return wrong numbers instead of errors</h1>
+<p>This week I fixed three bugs in inference runtimes: one in vLLM and two in ONNX Runtime. Two of them return wrong values without any error or warning, and the third crashes a graph optimizer on a perfectly valid model. Each fix was small, between 8 and 30 lines. Most of the work was narrowing the problem down until the cause was obvious, and proving that the fix changes exactly what it should. The three PRs are under review.</p>
+
+<h2>1. vLLM: FP8 RMSNorm reads a strided input at the wrong addresses</h2>
+<p>A vLLM issue (<a href="https://github.com/vllm-project/vllm/issues/67411">#67411</a>) reported that <code>fused_add_rms_norm</code> computes wrong values when its input's last dimension is not contiguous, for example a transposed tensor. The kernel indexes the input as <code>input_stride * token + feature</code>, which assumes <code>input.stride(-1) == 1</code>. The C++ host code checked that for the residual, but not for the input.</p>
+<p>Before writing a fix I looked at the sibling functions in the same files. <code>rms_norm</code> already makes such an input contiguous. The two static FP8 variants, <code>rms_norm_static_fp8_quant</code> and <code>fused_add_rms_norm_static_fp8_quant</code>, had no check at all. Run on <code>main</code>, each case in its own process:</p>
+<table>
+<thead><tr><th>op</th><th>transposed input</th><th>every other column</th></tr></thead>
+<tbody>
+<tr><td><code>rms_norm_static_fp8_quant</code></td><td>CUDA error: misaligned address</td><td>4027 of 4096 outputs wrong</td></tr>
+<tr><td><code>fused_add_rms_norm_static_fp8_quant</code></td><td>4001 of 4096 wrong, residual wrong</td><td>3995 of 4096 wrong, residual wrong</td></tr>
+</tbody>
+</table>
+<p>A misaligned address is worse than a wrong value: it leaves the CUDA context unusable, so every later CUDA call in that process fails too. Another contributor opened a PR for the <code>fused_add_rms_norm</code> part of #67411 while I was validating mine. So I filed the FP8 kernels as a new issue and limited my PR to them. Both kernels only read the input, so the fix copies it to contiguous memory when needed, as <code>rms_norm</code> does (<a href="https://github.com/vllm-project/vllm/pull/67484">vllm#67484</a>). The new test fails on the base commit and passes with the change, and all 977 layernorm tests pass. A community member independently confirmed the fix on another SM80 GPU.</p>
+
+<h2>2. ONNX Runtime: the Cast optimizer crashes on <code>Where(c, x, x)</code></h2>
+<p><a href="https://github.com/microsoft/onnxruntime/issues/34192">onnxruntime#34192</a> is a three-node model that crashes the <code>PropagateCastOps</code> optimizer: an FP16 to FP32 to FP16 Cast pair whose result feeds both data inputs of a <code>Where</code>. The optimizer removes the Cast pair and moves the consumer's input edge to the original tensor. It found that input with <code>IndexOfNodeInput</code>, which returns the first match. So it removed and re-added the first edge only, but it replaced every matching input definition. The edge into the second input still pointed at the deleted Cast, and cleaning it up later failed with <code>Argument mismatch when removing edge</code>.</p>
+<p>The same pattern was in a second code path, used when the first Cast has other consumers. That path failed with a different message: <code>Can't remove node ... as it still has output edges</code>. Both loops now walk every input of the consumer that reads the removed tensor (<a href="https://github.com/microsoft/onnxruntime/pull/34221">onnxruntime#34221</a>). The new test covers both graph shapes, both propagation strategies and three optimization levels. It fails on <code>main</code> with each of the two exceptions and passes with the fix. All 793 optimizer tests still pass.</p>
+
+<h2>3. ONNX Runtime: MatMulNBits returns zeros when the scales are not constants</h2>
+<p><a href="https://github.com/microsoft/onnxruntime/issues/34216">onnxruntime#34216</a> reported that an FP16 <code>DequantizeLinear</code> followed by <code>MatMul</code> returns 0 instead of 0.25 once graph optimizations are on. The optimized graph showed what was going on. The two nodes were fused into <code>MatMulNBits</code> with accuracy level 4, the int8 path and the default. The CPU provider then inserted a <code>Cast</code> on the FP16 scales so the node could run in FP32. After that Cast, the scales were no longer a constant.</p>
+<p>That suggested a test with no FP16 in it at all: a float <code>MatMulNBits</code> whose scales are either a constant or a graph input. I ran it on released onnxruntime 1.31.1:</p>
+<table>
+<thead><tr><th>scales</th><th>accuracy level 1</th><th>accuracy level 4</th></tr></thead>
+<tbody>
+<tr><td>constant initializer</td><td>correct</td><td>correct</td></tr>
+<tr><td>graph input</td><td>correct</td><td><strong>all zeros</strong></td></tr>
+<tr><td>output of a Cast</td><td>correct</td><td><strong>all zeros</strong></td></tr>
+</tbody>
+</table>
+<p>So the bug is not about FP16. Any int8-path <code>MatMulNBits</code> on x64 with runtime scales or zero points returns zeros. That holds for 4-bit and 8-bit weights, and for versions 1.29, 1.30 and 1.31. The x64 int8 kernels read the scales from the pre-packed weights, and pre-packing can only use constant scales. ARM64 already declines to pre-pack in this situation, so the fix extends that existing check to x64 (<a href="https://github.com/microsoft/onnxruntime/pull/34224">onnxruntime#34224</a>). An existing x64 test with dynamic scales had forced the FP32 path, which is why the int8 case was never covered.</p>
+<p>One end-to-end check misled me at first. Running the issue's model with all optimizations passed even without my fix. With <code>ORT_ENABLE_ALL</code>, a later pass constant-folds the inserted Cast, so the scales are constant again. The issue used <code>ORT_ENABLE_EXTENDED</code>. At that level the model returns 0 on <code>main</code> and the correct 0.25 with the fix.</p>
+
+<h2>What helped</h2>
+<ul>
+<li><strong>Check the siblings of the reported function.</strong> In the vLLM case, two functions next to the reported one had the same missing check, and one of them crashed the GPU context. In ONNX Runtime the same loop existed in two code paths.</li>
+<li><strong>Remove variables until the bug stays.</strong> The MatMulNBits issue looked like an FP16 rounding problem. Taking FP16 out and keeping the bug showed that the real cause was runtime scales, which affects far more models.</li>
+<li><strong>Show the test failing before the fix, for the right reason.</strong> Twice my first check passed on the unfixed code. Once the test was compiled out of the build, and once a higher optimization level hid the bug. Both times the first result would have been misleading evidence.</li>
+<li><strong>Before opening a PR, look again for competing work.</strong> One of the three issues had a new PR from someone else by the time mine was ready. Narrowing my change to the part they did not cover kept both PRs useful.</li>
+</ul>
+<p><em>I used Claude (Anthropic) to help trace these bugs, write the fixes and tests, and draft this post. I reviewed the results.</em></p>
+<hr />
+<p><em>Qiming Bao is an AI researcher in Auckland, New Zealand, working on LLM reasoning and model deployment. He received his PhD from the University of Auckland's Strong AI Lab and contributes to the PyTorch ONNX exporter, ONNX Runtime, ONNX Runtime GenAI and Microsoft PyRIT.</em></p>
+</main>
+</body>
+</html>

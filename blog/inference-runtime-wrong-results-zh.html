@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>三个只给出错误结果、不报错的推理框架 bug | 包启明</title>
+<meta name="description" content="vLLM 的 FP8 RMSNorm 内核读错跨步输入，ONNX Runtime 的优化器遇到 Where(c, x, x) 崩溃，以及 ONNX Runtime MatMulNBits 在 scale 不是常量时输出全零。每个 bug 是怎么发现、缩小范围并修复的。">
+<link rel="canonical" href="https://14h034160212.github.io/blog/inference-runtime-wrong-results-zh.html">
+<link rel="alternate" hreflang="en" href="https://14h034160212.github.io/blog/inference-runtime-wrong-results.html">
+<link rel="alternate" hreflang="zh-CN" href="https://14h034160212.github.io/blog/inference-runtime-wrong-results-zh.html">
+<link rel="icon" type="image/jpeg" href="../qiming.jpg">
+<style>
+:root { --fg:#1f2328; --muted:#59636e; --bg:#ffffff; --code:#f6f8fa; --line:#d1d9e0; --link:#0969da; }
+@media (prefers-color-scheme: dark) { :root { --fg:#e6edf3; --muted:#9198a1; --bg:#0d1117; --code:#161b22; --line:#3d444d; --link:#4493f8; } }
+body { font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial, sans-serif; color:var(--fg); background:var(--bg); margin:0; line-height:1.75; }
+main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: 1.9rem; line-height:1.3; margin: 0.4em 0 0.2em; }
+h2 { margin-top: 2em; border-bottom:1px solid var(--line); padding-bottom:.2em; }
+a { color: var(--link); }
+.meta { color: var(--muted); font-size: .92rem; }
+table { border-collapse: collapse; margin: 1em 0; display:block; overflow-x:auto; }
+th, td { border: 1px solid var(--line); padding: 6px 12px; }
+th { background: var(--code); }
+pre { background: var(--code); padding: 12px; overflow-x: auto; border-radius: 6px; }
+code { background: var(--code); padding: 1px 4px; border-radius: 4px; font-size: .92em; }
+pre code { padding: 0; }
+</style>
+</head>
+<body>
+<main>
+<p class="meta"><a href="../index.html">Qiming Bao</a> · Blog · 2026 年 11 月 14 日 · <a href="inference-runtime-wrong-results.html">English</a> / 中文</p>
+<h1>三个只给出错误结果、不报错的推理框架 bug</h1>
+<p>这周我修了三个推理框架的 bug：一个在 vLLM，两个在 ONNX Runtime。其中两个不报错也不警告，只是悄悄输出错误的数值；第三个会让图优化器在一个完全合法的模型上崩溃。每个修复都很小，8 到 30 行。大部分工作花在把问题范围不断缩小，直到原因一目了然，再证明修复只改变了该改变的东西。三个 PR 都在审核中。</p>
+
+<h2>1. vLLM：FP8 RMSNorm 在错误的地址读取跨步输入</h2>
+<p>vLLM 的一个 issue（<a href="https://github.com/vllm-project/vllm/issues/67411">#67411</a>）报告：当输入的最后一维不连续时（比如转置过的张量），<code>fused_add_rms_norm</code> 会算出错误的值。内核按 <code>input_stride * token + feature</code> 读取输入，这默认了 <code>input.stride(-1) == 1</code>。C++ 主机代码对 residual 检查了这一点，对 input 却没有。</p>
+<p>动手修之前，我先看了同一文件里的兄弟函数。<code>rms_norm</code> 会先把这种输入转成连续的；两个静态 FP8 版本 <code>rms_norm_static_fp8_quant</code> 和 <code>fused_add_rms_norm_static_fp8_quant</code> 则完全没有检查。在 <code>main</code> 上每种情况单独一个进程运行：</p>
+<table>
+<thead><tr><th>函数</th><th>转置输入</th><th>隔列取的输入</th></tr></thead>
+<tbody>
+<tr><td><code>rms_norm_static_fp8_quant</code></td><td>CUDA error: misaligned address</td><td>4096 个输出错 4027 个</td></tr>
+<tr><td><code>fused_add_rms_norm_static_fp8_quant</code></td><td>错 4001 个，residual 也错</td><td>错 3995 个，residual 也错</td></tr>
+</tbody>
+</table>
+<p>misaligned address 比算错还糟：它会让 CUDA 上下文无法再用，这个进程之后的所有 CUDA 调用都会失败。在我验证修复的时候，另一位贡献者为 #67411 中 <code>fused_add_rms_norm</code> 的部分开了 PR，所以我把 FP8 内核的问题单独报成一个新 issue，PR 只修这两个函数。它们只读输入，所以修复方法是在需要时把输入复制成连续内存，和 <code>rms_norm</code> 的做法一样（<a href="https://github.com/vllm-project/vllm/pull/67484">vllm#67484</a>）。新测试在原代码上失败、修复后通过，977 个 layernorm 测试全部通过。一位社区成员还在另一张 SM80 显卡上独立验证了这个修复。</p>
+
+<h2>2. ONNX Runtime：Cast 优化器遇到 <code>Where(c, x, x)</code> 崩溃</h2>
+<p><a href="https://github.com/microsoft/onnxruntime/issues/34192">onnxruntime#34192</a> 给出了一个让 <code>PropagateCastOps</code> 优化器崩溃的三节点模型：一对 FP16→FP32→FP16 的 Cast，结果同时连到 <code>Where</code> 的两个数据输入。优化器删掉这对 Cast，把下游节点的输入边移到原始张量上。它用 <code>IndexOfNodeInput</code> 找这个输入，而这个函数只返回第一个匹配的位置。于是它只删除、重连了第一条边，却把所有匹配的输入定义都替换了。连到第二个输入的那条边仍然指向已删除的 Cast，后面清理时就报错 <code>Argument mismatch when removing edge</code>。</p>
+<p>同样的写法还出现在另一条代码路径里（第一个 Cast 还有别的下游节点时），那条路径报的是另一个错误：<code>Can't remove node ... as it still has output edges</code>。修复后，两处循环都会遍历下游节点每一个用到被删除张量的输入（<a href="https://github.com/microsoft/onnxruntime/pull/34221">onnxruntime#34221</a>）。新测试覆盖两种图结构、两种传播策略和三个优化级别，在 <code>main</code> 上分别以这两种异常失败，修复后通过；793 个优化器测试仍全部通过。</p>
+
+<h2>3. ONNX Runtime：scale 不是常量时 MatMulNBits 输出全零</h2>
+<p><a href="https://github.com/microsoft/onnxruntime/issues/34216">onnxruntime#34216</a> 报告：一个 FP16 的 <code>DequantizeLinear</code> 接 <code>MatMul</code>，开启图优化后结果从 0.25 变成 0。优化后的图透露了原因：两个节点被融合成 accuracy level 4（int8 路径，也是默认值）的 <code>MatMulNBits</code>；CPU 为了让它在 FP32 下运行，又给 FP16 的 scale 插了一个 <code>Cast</code>。有了这个 Cast，scale 就不再是常量了。</p>
+<p>这启发了一个完全不含 FP16 的测试：一个 FP32 的 <code>MatMulNBits</code>，scale 分别是常量或者图输入。在发布版 onnxruntime 1.31.1 上：</p>
+<table>
+<thead><tr><th>scale</th><th>accuracy level 1</th><th>accuracy level 4</th></tr></thead>
+<tbody>
+<tr><td>常量</td><td>正确</td><td>正确</td></tr>
+<tr><td>图输入</td><td>正确</td><td><strong>全零</strong></td></tr>
+<tr><td>Cast 的输出</td><td>正确</td><td><strong>全零</strong></td></tr>
+</tbody>
+</table>
+<p>所以这个 bug 和 FP16 无关：在 x64 上，任何走 int8 路径、scale 或零点在运行时才给出的 <code>MatMulNBits</code> 都输出全零，4-bit 和 8-bit 权重都是，1.29、1.30、1.31 三个版本也都是。x64 的 int8 内核从预打包的权重里读 scale，而预打包只能用常量 scale。ARM64 已经会在这种情况下跳过预打包，修复就是把这个现成的检查推广到 x64（<a href="https://github.com/microsoft/onnxruntime/pull/34224">onnxruntime#34224</a>）。现有的 x64 动态 scale 测试强制走了 FP32 路径，所以 int8 的情况一直没被覆盖。</p>
+<p>有一次端到端验证一开始误导了我：用全部优化级别运行 issue 里的模型，没有修复也能通过。原因是在 <code>ORT_ENABLE_ALL</code> 下，后面的优化会把插入的 Cast 常量折叠掉，scale 又变回常量。issue 用的是 <code>ORT_ENABLE_EXTENDED</code>，在这个级别下，<code>main</code> 输出 0，修复后输出正确的 0.25。</p>
+
+<h2>有用的做法</h2>
+<ul>
+<li><strong>检查被报告函数的兄弟函数。</strong>vLLM 里，被报告函数旁边有两个函数缺同样的检查，其中一个会让 GPU 上下文崩溃。ONNX Runtime 里同样的循环出现在两条代码路径上。</li>
+<li><strong>不断去掉变量，直到 bug 依然存在。</strong>MatMulNBits 的问题看起来像 FP16 舍入问题。去掉 FP16 后 bug 仍在，才发现真正的原因是运行时 scale，影响的模型多得多。</li>
+<li><strong>证明测试在修复前失败，而且是因为正确的原因。</strong>有两次，我的第一次检查在未修复的代码上也通过了：一次是测试被条件编译排除在外，一次是更高的优化级别掩盖了 bug。两次如果只看第一次的结果，都会得到误导性的证据。</li>
+<li><strong>开 PR 前再查一次有没有人在做。</strong>三个 issue 中有一个，在我准备好时已经有人开了 PR。把我的改动缩小到对方没覆盖的部分，两个 PR 就都有价值。</li>
+</ul>
+<p><em>排查这些 bug、编写修复和测试以及撰写本文时，我使用了 Claude（Anthropic）辅助。所有结果都经过我本人审阅。</em></p>
+<hr />
+<p><em>包启明，现居新西兰奥克兰的 AI 研究者，研究方向为大模型推理与模型部署。博士毕业于奥克兰大学 Strong AI Lab，参与 PyTorch ONNX 导出器、ONNX Runtime、ONNX Runtime GenAI 和 Microsoft PyRIT 等开源项目的贡献。</em></p>
+</main>
+</body>
+</html>
