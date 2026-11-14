@@ -63,6 +63,19 @@ pre code { padding: 0; }
 <p><strong>ERNIE-Layout</strong>（通过社区的 PyTorch 移植版，用同样的位置复制）在同样的页面上结论一致：截断 70.87 ± 0.18，滑动窗口 92.78 ± 0.30，位置扩展到 2048 为 92.88 ± 0.17（W&amp;B：<a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/7hwey8v6">512</a>、<a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/4b0td6ek">窗口</a>、<a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/ax6vuu0v">2048</a>）。读完整页同样比截断高 22 分，但对 ERNIE-Layout 来说和滑动窗口打平（+0.10，配对 t 检验 p = 0.28）；而 LayoutLMv3 比窗口高 1.6 分，5 个种子全部更好（p = 0.007）。</p>
 <p>速度靠动态补齐：每个批次只补齐到其中最长的文档，而不是补到 2048，所以短页面的开销和 512 的模型一样，只有真正长的页面才多花时间。2048 的微调时间是截断的 1.5 倍，而不是 4 倍。</p>
 
+<h2>哪些做法没有效果，以及原因</h2>
+<p><strong>插值位置编码，而不是复制。</strong>位置插值是常用的扩展长度方法，它把 512 个预训练位置均匀拉伸到 2048。在这里它对两个模型都不如复制：LayoutLMv3 为 91.81，复制为 92.52（5 个种子，配对 t 检验 p &lt; 0.001，<a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/8y0ugs4w">W&amp;B</a>）；ERNIE-Layout 为 91.51，复制为 92.88（p = 0.002，<a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/5hpa6h7e">W&amp;B</a>）。</p>
+<p>插值出来的向量本身没有问题：相邻的预训练位置很相似（余弦 0.89），所以每个插值向量都接近某个学过的向量（余弦 0.99）。问题在于位置被挪动了。把 2048 个位置压进预训练的范围，每个 token 的位置都变了：第 300 个 token 拿到的大约是原来第 75 个位置的编码，同一个位置插值前后的余弦相似度只有 0.28。而相对位置偏置看到的仍是真实距离，两种位置信息互相矛盾。复制则让前 512 个位置保持预训练时的样子。按页面长度拆分测试集（1 个种子），可以看出损失来自哪里：</p>
+<table>
+<thead><tr><th>页面长度</th><th>页数</th><th>复制</th><th>插值</th><th>差</th></tr></thead>
+<tbody>
+<tr><td>不超过 512 个 token</td><td class="n">175</td><td class="n">85.02</td><td class="n">83.46</td><td class="n">−1.57</td></tr>
+<tr><td>513 到 1024</td><td class="n">338</td><td class="n">91.98</td><td class="n">90.09</td><td class="n">−1.88</td></tr>
+<tr><td>1025 到 2048</td><td class="n">232</td><td class="n">94.03</td><td class="n">93.78</td><td class="n">−0.24</td></tr>
+</tbody>
+</table>
+<p>损失最大的是短页面和中等长度的页面，尽管它们放得进 512 或接近 512。在这些页面上，复制就等于原模型。</p>
+<p><strong>ERNIE-Layout 改成右补齐。</strong>PyTorch 移植版左补齐，PaddleNLP 右补齐。两者都把文本和 197 个图像块从 0 开始编号，所以补齐方向会改变短页面上 token 的位置，以及它们和图像块之间的距离。预训练模型对此是敏感的：同一页 FUNSD，左补齐和右补齐时最终表示的平均余弦相似度为 0.94。但微调之后两者准确率相同（左 84.27，右 83.72，5 个种子，p = 0.13；W&amp;B：<a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/p9hq7xu7">左</a>、<a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/mrpm2sn9">右</a>）。微调吸收了这个差异，所以我保留了移植版的默认设置。</p>
 <h2>显存究竟花在哪里</h2>
 <p>LayoutLMv3 会根据两个 token 的一维距离，以及它们在页面上的水平和垂直距离，给每个注意力分数加上可学习的偏置。transformers 的实现是先构建 n × n 的距离矩阵，用 fp32 计算对数分桶，再从偏置表里取值。我本以为 n × n 的偏置本身是问题，其实不是：2048 个 token 加 197 个图块时，fp16 的偏置只有约 121 MB，分桶计算的 fp32 临时数据要大好几倍。</p>
 <p>分桶只取决于距离，而距离只有几千种可能。所以我按距离把每张表预先算好，直接用 fp16 查出合并后的偏置，12 层共用一份。结果是精确的，和 transformers 的注意力输出一致。注意力本身用 PyTorch 显存高效的 <code>scaled_dot_product_attention</code> 内核计算。</p>
