@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Long documents with LayoutLMv3 on a 16 GB GPU, without pre-training | Qiming Bao</title>
-<meta name="description" content="LayoutLMv3 reads 512 tokens, and on pages of line-item tables that loses 41% of the fields. Tiling its position embeddings and building its relative-position bias from lookup tables lets it read 2048 tokens in about the memory of 512, with no pre-training: 92.5 F1 against 68.3 for truncation on VRDU Ad-buy Forms.">
+<meta name="description" content="LayoutLMv3 and ERNIE-Layout read only 512 tokens, so on long pages they miss 41-58% of the fields. Letting them read the whole page, with no extra pre-training, gains 20 to 33 F1 on three real long-document datasets, and 2048 tokens need about the memory of 512 on a 16 GB GPU.">
 <link rel="canonical" href="https://14h034160212.github.io/blog/long-documents-layoutlmv3-16gb.html">
 <link rel="alternate" hreflang="en" href="https://14h034160212.github.io/blog/long-documents-layoutlmv3-16gb.html">
 <link rel="alternate" hreflang="zh-CN" href="https://14h034160212.github.io/blog/long-documents-layoutlmv3-16gb-zh.html">
@@ -25,110 +25,70 @@ td.n { text-align: right; }
 pre { background: var(--code); padding: 12px; overflow-x: auto; border-radius: 6px; }
 code { background: var(--code); padding: 1px 4px; border-radius: 4px; font-size: .92em; }
 pre code { padding: 0; }
+.small { font-size: .92rem; color: var(--muted); }
 </style>
 </head>
 <body>
 <main>
-<p class="meta"><a href="../index.html">Qiming Bao</a> · Blog · 13 November 2026 · English / <a href="long-documents-layoutlmv3-16gb-zh.html">中文</a></p>
+<p class="meta"><a href="../index.html">Qiming Bao</a> · Blog · 13 November 2026, updated 15 November 2026 · English / <a href="long-documents-layoutlmv3-16gb-zh.html">中文</a></p>
 <h1>Long documents with LayoutLMv3 on a 16 GB GPU, without pre-training</h1>
-<p>LayoutLMv3 reads at most 512 text tokens. That is fine for a receipt, but a page of a statement or an order form with dozens of line items is often 1,000 tokens or more, and everything after token 512 is never seen. I wanted a version that reads the whole page under three constraints: no extra pre-training, inference on a 16 GB V100, and memory and speed close to the 512-token model. This post describes what worked. The code is in my <a href="https://github.com/14H034160212/layoutlmv3-pretraining">layoutlmv3-pretraining repository</a>.</p>
+<p>LayoutLMv3 and ERNIE-Layout read at most 512 text tokens. A page of an order form or an invoice with many line items is often longer, and everything after token 512 is never seen. On the three real datasets below, cutting pages at 512 tokens hides 41% to 58% of the words the model has to label.</p>
+<p><strong>In short:</strong> letting the models read the whole page, with no extra pre-training, gives 20 to 33 more F1 points on all three datasets. It runs on a 16 GB GPU: inference at 2048 tokens needs 0.80 GB, against 0.69 GB at 512.</p>
 
-<h2>How much does truncation lose?</h2>
-<p>FUNSD, the usual benchmark, is too short to tell: only 4 of its 50 test forms exceed 512 tokens. I used the Ad-buy Forms part of <a href="https://github.com/google-research-datasets/vrdu">VRDU</a> (Google's visually rich document benchmark): TV advertising orders whose pages are tables of line items, with 14 annotated fields such as channel, program, dates and amounts. I turned each page into token classification (BIO tags over the fields).</p>
+<h2>Results</h2>
+<p>Each model is fine-tuned on each dataset in the usual way (2,000 steps, 5 random seeds). The only difference between the columns is what happens to text beyond 512 tokens: cut off (the baseline), read in overlapping 512-token windows, or read in one pass with the model's positions extended.</p>
 <table>
-<thead><tr><th>VRDU Ad-buy test set (774 pages)</th><th>value</th></tr></thead>
+<thead><tr><th>dataset (labelled words lost at 512)</th><th>model</th><th>cut at 512</th><th>windows</th><th>whole page</th></tr></thead>
 <tbody>
-<tr><td>median / 90th percentile / longest page</td><td class="n">829 / 1,471 / 5,105 tokens</td></tr>
-<tr><td>pages longer than 512 tokens</td><td class="n">77%</td></tr>
-<tr><td>labelled words lost by truncating at 512 / 1024 / 2048</td><td class="n">40.8% / 5.5% / 0%</td></tr>
+<tr><td>VRDU Ad-buy, order forms (41%)</td><td>LayoutLMv3</td><td class="n">68.3</td><td class="n">91.0</td><td class="n"><strong>92.5</strong></td></tr>
+<tr><td></td><td>ERNIE-Layout</td><td class="n">70.9</td><td class="n">92.8</td><td class="n"><strong>92.9</strong></td></tr>
+<tr><td>VRDU Registration, government forms (52%)</td><td>LayoutLMv3</td><td class="n">64.0</td><td class="n"><strong>88.7</strong></td><td class="n">87.8</td></tr>
+<tr><td></td><td>ERNIE-Layout</td><td class="n">57.1</td><td class="n"><strong>90.2</strong></td><td class="n">89.5</td></tr>
+<tr><td>RealKIE, real invoices with line items (58%)</td><td>LayoutLMv3</td><td class="n">42.5</td><td class="n">66.4</td><td class="n"><strong>67.6</strong></td></tr>
+<tr><td></td><td>ERNIE-Layout</td><td class="n">46.1</td><td class="n">66.7</td><td class="n"><strong>67.0</strong></td></tr>
 </tbody>
 </table>
-<p>At 512 tokens the model cannot see four in ten of the words it is asked to label.</p>
-
-<h2>Reading longer pages without pre-training</h2>
-<p>Two things stop LayoutLMv3 from reading more than 512 tokens: it has only 512 learned position embeddings, and attention memory grows with the square of the length.</p>
-<p><strong>Positions.</strong> I extend the 1D position embeddings by repeating the 512 pretrained ones (the copy initialisation Longformer used), then fine-tune on the task as usual. Nothing else is trained. This works better than it sounds because LayoutLMv3 also has 2D layout embeddings and relative-position biases, which are unchanged by the length. The alternative is 512-token sliding windows with overlap, merging the predictions per word.</p>
-<p><strong>Results</strong> (LayoutLMv3-base, 2,000 fine-tuning steps, batch 2, 5 seeds, every word scored):</p>
-<table>
-<thead><tr><th>LayoutLMv3</th><th>F1 × 100</th><th>time, 5 seeds</th></tr></thead>
-<tbody>
-<tr><td>truncate at 512</td><td class="n">68.31 ± 0.13</td><td class="n">21.5 min</td></tr>
-<tr><td>512-token windows, stride 128</td><td class="n">90.97 ± 0.65</td><td class="n">25.8 min</td></tr>
-<tr><td>positions extended to 1024</td><td class="n">89.87 ± 0.13</td><td class="n">26.8 min</td></tr>
-<tr><td><strong>positions extended to 2048</strong></td><td class="n"><strong>92.52 ± 0.11</strong></td><td class="n">31.9 min</td></tr>
-</tbody>
-</table>
-<p>Reading the whole page at 2048 tokens is 24 points better than truncation and 1.6 points better than windows. The likely reason is that a window sees only part of a table, while the full page lets every row attend to the column headers and the other rows. 1024 tokens is not enough here: a third of the pages are longer, and their tails are still cut. Runs are logged on W&amp;B (<a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/rqakzlmm">512</a>, <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/xsm2yq39">windows</a>, <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/yax56big">1024</a>, <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/eybwos7p">2048</a>).</p>
-<p><strong>Convergence.</strong> Repeated position embeddings do not slow fine-tuning down. Evaluating every 250 steps (3 seeds), the training loss falls at the same rate with 512 and 2048 tokens, and the 2048-token model is ahead on the test set at every checkpoint: 36.3 against 19.0 F1 at step 250, 74.1 against 53.7 at step 500 (already above truncation's final 68.3), 89.5 against 66.3 at step 1000. It levels off near step 1500 at 92.7 (W&amp;B <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/472zb7o1">512</a>, <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/wvh50gmg">2048</a>). This run used the lookup-table attention for training as well.</p>
-<p><strong>ERNIE-Layout</strong> (through the community PyTorch port, with the same position tiling) shows the same picture on the same pages: truncation 70.87 ± 0.18, windows 92.78 ± 0.30, positions extended to 2048 92.88 ± 0.17 (W&amp;B <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/7hwey8v6">512</a>, <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/4b0td6ek">windows</a>, <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/ax6vuu0v">2048</a>). Reading the whole page is again 22 points better than truncation, but for ERNIE-Layout it ties with windows (+0.10, paired p = 0.28), while for LayoutLMv3 the 1.6-point gain over windows held in all five seeds (p = 0.007).</p>
-<p>Speed comes from dynamic padding: each batch is padded to its longest document instead of to 2048, so short pages cost the same as with a 512-token model and only genuinely long pages cost more. Fine-tuning at 2048 took 1.5 times as long as truncation, not 4 times.</p>
-
-<h2>Two more real long-document datasets</h2>
-<p>One dataset is not much evidence, so I repeated the comparison on two more sets of real documents with long pages. The first is the Registration Forms half of VRDU: US foreign-agent registration filings, where truncation at 512 tokens drops 52.1% of the labelled words, mostly signatures and titles at the bottom of the page. The second is the FCC Invoices set of <a href="https://arxiv.org/abs/2403.20101">RealKIE</a>: 370 real TV-advertising invoices, several pages each, with document-level fields and five line-item fields (description, air days, start and end dates, rate). There, truncation drops 58.1% of the labelled words, and 1024 tokens still drop 21.2%. Same recipe, 5 seeds each:</p>
-<table>
-<thead><tr><th>dataset</th><th>model</th><th>truncate at 512</th><th>windows</th><th>full page</th></tr></thead>
-<tbody>
-<tr><td>VRDU Ad-buy (order forms)</td><td>LayoutLMv3</td><td class="n">68.31</td><td class="n">90.97</td><td class="n"><strong>92.52</strong> (2048)</td></tr>
-<tr><td></td><td>ERNIE-Layout</td><td class="n">70.87</td><td class="n">92.78</td><td class="n"><strong>92.88</strong> (2048)</td></tr>
-<tr><td>VRDU Registration (government forms)</td><td>LayoutLMv3</td><td class="n">63.96</td><td class="n"><strong>88.65</strong></td><td class="n">87.82 (1024)</td></tr>
-<tr><td></td><td>ERNIE-Layout</td><td class="n">57.07</td><td class="n"><strong>90.18</strong></td><td class="n">89.45 (1024)</td></tr>
-<tr><td>RealKIE FCC (invoices with line items)</td><td>LayoutLMv3</td><td class="n">42.46</td><td class="n">66.39</td><td class="n"><strong>67.57</strong> (2048)</td></tr>
-<tr><td></td><td>ERNIE-Layout</td><td class="n">46.09</td><td class="n">66.74</td><td class="n"><strong>66.99</strong> (2048)</td></tr>
-</tbody>
-</table>
-<p>The main result holds on every dataset and both models: reading the whole page, with windows or with extended positions, is 20 to 33 points better than truncation, in all 5 seeds. Between the two ways of reading the whole page, LayoutLMv3 at 2048 tokens is ahead of windows on the order forms and the invoices (+1.2 on RealKIE, 5/5 seeds, p = 0.011). On the registration forms, where 1024 tokens already cover every page, the two are tied. ERNIE-Layout ties windows on all three. The invoices are hard for both models, with dense line-item tables and noisy OCR, which is why their absolute scores are lower. W&amp;B: RealKIE LayoutLMv3 <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/92l0mlu1">512</a>, <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/shq41vnk">windows</a>, <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/mepkvzug">2048</a>; Registration LayoutLMv3 <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/7rzkk056">512</a>, <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/v5yda92v">windows</a>, <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/n6q9h7hh">1024</a>; all runs are listed in the repository README. RealKIE is licensed CC BY-NC 4.0.</p>
-<p>Two public invoice and receipt datasets I measured first, FATURA and SROIE, turned out to be too short to test this. Their longest pages are 249 and 537 tokens, and truncation loses none of their labels. Most public invoice datasets are single short pages, which is why the long ones above matter.</p>
-<h2>What did not work, and why</h2>
-<p><strong>Interpolating the positions instead of copying them.</strong> Position interpolation, which stretches the 512 pretrained positions evenly over 2048, is a common way to extend context. Here it was worse than copying for both models: LayoutLMv3 91.81 against 92.52 (5 seeds, paired p &lt; 0.001, <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/8y0ugs4w">W&amp;B</a>) and ERNIE-Layout 91.51 against 92.88 (p = 0.002, <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/5hpa6h7e">W&amp;B</a>).</p>
-<p>The interpolated vectors themselves are fine: adjacent pretrained positions are similar (cosine 0.89), so every interpolated vector is close to a trained one (cosine 0.99). The problem is where they go. Squeezing 2048 positions into the pretrained range moves every token: token 300 now gets roughly what position 75 used to have, and the vector at a given index keeps only 0.28 cosine similarity with the original. The relative position biases still see the true distances, so the two signals disagree. Copying leaves the first 512 positions exactly as pretrained. Splitting the test pages by length (one seed) shows where the loss comes from:</p>
-<table>
-<thead><tr><th>page length</th><th>pages</th><th>copy</th><th>interpolate</th><th>difference</th></tr></thead>
-<tbody>
-<tr><td>up to 512 tokens</td><td class="n">175</td><td class="n">85.02</td><td class="n">83.46</td><td class="n">−1.57</td></tr>
-<tr><td>513 to 1024</td><td class="n">338</td><td class="n">91.98</td><td class="n">90.09</td><td class="n">−1.88</td></tr>
-<tr><td>1025 to 2048</td><td class="n">232</td><td class="n">94.03</td><td class="n">93.78</td><td class="n">−0.24</td></tr>
-</tbody>
-</table>
-<p>The short and medium pages lose the most, even though they fit in 512 or close to it. On those pages, copying is the original model.</p>
-<p><strong>Padding ERNIE-Layout on the right.</strong> The PyTorch port pads on the left, while PaddleNLP pads on the right. Both number the text and the 197 image patches from 0, so the padding side changes the positions a short page's tokens get and their distances to the image patches. The pretrained model is sensitive to this: for the same FUNSD page, the final hidden states with left and right padding have a mean cosine similarity of 0.94. After fine-tuning, though, the two give the same accuracy (84.27 left, 83.72 right, 5 seeds, p = 0.13; W&amp;B <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/p9hq7xu7">left</a>, <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/mrpm2sn9">right</a>). Fine-tuning absorbs the difference, so I kept the port's default.</p>
-<h2>Where the memory actually goes</h2>
-<p>LayoutLMv3 adds learned biases to every attention score, based on the 1D distance between two tokens and their horizontal and vertical distance on the page. In transformers, each bias is computed by building n × n matrices of distances, sorting them into logarithmic buckets in fp32, and gathering from the bias tables. I expected the n × n bias itself to be the problem. It is not: in fp16 it is about 121 MB at 2048 tokens plus 197 image patches. The fp32 temporaries of the bucketing are several times larger.</p>
-<p>The bucket depends only on the distance, and there are only a few thousand possible distances. So I compute each table once per distance, gather the combined bias directly in fp16, and share it across all 12 layers. The result is exact: the same outputs as transformers' attention. Attention then runs through PyTorch's memory-efficient <code>scaled_dot_product_attention</code> kernel.</p>
-<p>Inference, one document, fp16, total memory (weights included) / time:</p>
-<table>
-<thead><tr><th>text tokens</th><th>512</th><th>2048</th><th>4096</th><th>8192</th></tr></thead>
-<tbody>
-<tr><td>transformers' attention</td><td class="n">0.81 GB</td><td class="n">2.06 GB</td><td class="n">5.77 GB</td><td class="n">-</td></tr>
-<tr><td>SDPA, transformers' bucketing</td><td class="n">0.69 GB / 36 ms</td><td class="n">1.49 GB / 91 ms</td><td class="n">4.15 GB / 251 ms</td><td class="n">out of memory</td></tr>
-<tr><td><strong>SDPA, bias from lookup tables</strong></td><td class="n">0.69 GB / 35 ms</td><td class="n"><strong>0.80 GB / 66 ms</strong></td><td class="n"><strong>1.57 GB / 151 ms</strong></td><td class="n">4.58 GB / 484 ms</td></tr>
-</tbody>
-</table>
-<p>To check that the lookup tables change nothing on real data, I took one model fine-tuned on VRDU at 2048 tokens and evaluated it on the 774 test pages with four attention implementations: the previous SDPA version, the lookup tables, SDPA over query blocks, and FlexAttention. All four gave F1 92.96 and the same prediction for every labelled token. In that evaluation (fp32, batch 8, padded to 2048) the lookup-table version was also the fastest and needed 7.5 GB against 14.8 GB (<a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/wj2p542x">W&amp;B</a>).</p>
-<p>At 2048 tokens the model needs 0.80 GB, against 0.69 GB at 512, and it is faster than the previous SDPA version. For fine-tuning at 2048 tokens with batch 2 it needs 7.05 GB, or 3.99 GB with gradient checkpointing; 4096 tokens fit in 6.71 GB with checkpointing.</p>
-
-<h2>FlexAttention, and why I don't recommend it for a V100</h2>
-<p>My first attempt was FlexAttention, which computes the bias inside the attention kernel and never builds an n × n tensor. On an A100 it is impressive: 0.74 GB at 2048 tokens and 0.87 GB at 8192. Its first version was about four times slower than SDPA at 2048 tokens (0.35 s against 0.09 s), because it bucketed every score; the per-distance tables fixed that, which is where the idea above came from.</p>
-<p>But FlexAttention compiles its kernels with Triton, and recent Triton versions no longer use the tensor cores of pre-Ampere GPUs such as the V100. The A100 speed should not be expected there. The lookup-table version uses PyTorch's own memory-efficient kernel, which does use V100 tensor cores and needs no compiler. For pages beyond 8192 tokens there is also an option that runs SDPA over blocks of 512 queries: 1.08 GB at 8192 tokens, but 2.7 to 4.4 times slower than the lookup-table version (at 2048 to 8192 tokens).</p>
-<p>A caveat for all of the numbers: I measured on an A100 with a 15 GB memory cap and only the attention kernels a V100 supports, not on a real V100.</p>
-
-<h2>What is new and what is not</h2>
-<p>Most of the ingredients are known. <a href="https://arxiv.org/abs/2004.05150">Longformer</a> (2020) showed that copying position embeddings and fine-tuning without extra pre-training costs only about 0.6 points on WikiHop against its pre-trained version. <a href="https://arxiv.org/abs/2210.15497">LSG Attention</a> (2022) converts BERT, RoBERTa and BART checkpoints to long inputs with sparse attention. <a href="https://arxiv.org/abs/2404.12096">LongEmbed</a> (2024) extends embedding models without training. A recent paper (<a href="https://arxiv.org/abs/2611.01182">arXiv 2611.01182</a>, October 2026) computes relative-position attention exactly inside FlashAttention-style kernels, written in Triton.</p>
-<p>What I have not found elsewhere is the combination for layout models: LayoutLMv3's 1D and 2D biases, no pre-training, exact full attention (short pages give the same outputs as the original model), plain PyTorch kernels that run on a V100, and a benchmark with genuinely long pages. Sparse attention was needed in 2020 because full attention did not fit; with memory-efficient kernels, full attention fits at 2048 to 8192 tokens on a 16 GB GPU.</p>
-
-<h2>Next</h2>
 <ul>
-<li>Accuracy at 4096 tokens and beyond: none of the three datasets has labelled words past 2048.</li>
-<li>A comparison with LSG and Longformer on their long-text benchmarks, to test whether exact attention with copied positions holds up for plain-text encoders too.</li>
-<li>Factorising the layout biases into low-rank terms appended to the queries and keys, as <a href="https://arxiv.org/abs/2505.12044">FlashBias</a> (NeurIPS 2025) does for other biases, so that no n × n bias is built at all.</li>
-<li>Confirming the numbers on a real V100.</li>
+<li><strong>Reading the whole page wins by a wide margin.</strong> Both windows and the extended model beat the 512-token baseline by 20 to 33 points, in every one of the 5 seeds.</li>
+<li><strong>Windows or one pass?</strong> They are close. LayoutLMv3 reading up to 2048 tokens in one pass is about 1.2 to 1.6 points better than windows on the order forms and the invoices, and the two tie on the registration forms. For ERNIE-Layout they tie everywhere. Windows are the simplest option and need no change to the model.</li>
+<li><strong>The invoices are hard for every method</strong> (dense line-item tables, noisy OCR), which is why their scores are lower.</li>
 </ul>
-<h2>Code, runs and upstream changes</h2>
+<p>The datasets: <a href="https://github.com/google-research-datasets/vrdu">VRDU</a> (Google), with TV advertising orders and US registration filings; and the FCC Invoices of <a href="https://arxiv.org/abs/2403.20101">RealKIE</a>, 370 real invoices of several pages each, licensed CC BY-NC 4.0. Popular invoice and receipt datasets such as FATURA and SROIE are too short to test this: none of their labels lies beyond 512 tokens.</p>
+
+<h2>How it works: two small changes</h2>
+<p><strong>1. Let the model read more than 512 tokens.</strong> The model learned 512 position vectors, one per position. I repeat them: position 513 reuses the vector of position 1, and so on, then fine-tune as usual. This is the trick Longformer used. It works because the model can still tell the repeats apart from each word's position on the page and from the distances between words, which it also uses. No pre-training is needed, and fine-tuning learns as fast as before: the whole-page model is ahead of the baseline at every checkpoint and passes the baseline's final score after a quarter of the training.</p>
+<p><strong>2. Keep the memory down.</strong> At every layer, LayoutLMv3 adds a score for each pair of words based on how far apart they are. The standard implementation computes this for every pair with large temporary arrays, and that, not the text itself, is what fills the memory on long pages. The score depends only on the distance, and there are only a few thousand distances. So I compute it once per distance, look it up, and share it across layers. The results are exactly the same as the original model's: on real data, all four implementations I compared gave the same F1 and the same prediction for every word.</p>
+<table>
+<thead><tr><th>LayoutLMv3, one page, 16-bit</th><th>512 tokens</th><th>2048 tokens</th><th>4096 tokens</th></tr></thead>
+<tbody>
+<tr><td>inference memory, standard implementation</td><td class="n">0.81 GB</td><td class="n">2.06 GB</td><td class="n">5.77 GB</td></tr>
+<tr><td>inference memory, with the change</td><td class="n">0.69 GB</td><td class="n"><strong>0.80 GB</strong></td><td class="n">1.57 GB</td></tr>
+<tr><td>inference time, with the change</td><td class="n">35 ms</td><td class="n">66 ms</td><td class="n">151 ms</td></tr>
+</tbody>
+</table>
+<p>Training at 2048 tokens (batch 2) needs 4.0 GB with gradient checkpointing, and 4096 tokens fit in 6.7 GB. Batches are padded only to their longest page, so short pages cost the same as before. Training on the order forms at 2048 tokens took 1.5 times as long as the baseline, not 4 times.</p>
+
+<h2>What did not help</h2>
 <ul>
-<li>Repository: <a href="https://github.com/14H034160212/layoutlmv3-pretraining">14H034160212/layoutlmv3-pretraining</a>. The README section "Long documents within a 16 GB GPU" has every table with its W&amp;B run, and <code>results/long_docs/</code> has the raw results.</li>
-<li>Position extension and the attention implementations: <code>src/layoutlmv3_pretraining/long_docs.py</code>. Fine-tuning: <code>scripts/finetune_funsd.py</code>. VRDU conversion: <code>scripts/prepare_vrdu.py</code>. Benchmarks: <code>scripts/bench_inference_memory.py</code>, <code>scripts/bench_train_memory.py</code>.</li>
-<li>The recommended setting on VRDU:<br><code>python scripts/finetune_funsd.py --task vrdu --model microsoft/layoutlmv3-base --protocol strict --extend_positions --max_length 2048 --attention lut --dynamic_padding</code></li>
-<li>transformers: <a href="https://github.com/huggingface/transformers/pull/50688">#50688</a> brings SDPA and the lookup-table bias to LayoutLMv3 (<a href="https://github.com/huggingface/transformers/issues/35467">#35467</a>).</li>
-<li>ERNIE-Layout port: <a href="https://github.com/NormXU/ERNIE-Layout-Pytorch/pull/27">#27</a> (image normalised twice), <a href="https://github.com/NormXU/ERNIE-Layout-Pytorch/pull/30">#30</a> (tokenizer on transformers 4.45 and newer), <a href="https://github.com/NormXU/ERNIE-Layout-Pytorch/pull/31">#31</a> (relative biases with <code>index_select</code>: 3.8 times faster training steps, and 4096-token inference fits).</li>
+<li><strong>Stretching the positions instead of repeating them</strong> (position interpolation) was 0.7 to 1.4 points worse. It shifts every word's position, even on short pages, so the model loses what it learned; the loss was largest on pages of 1024 tokens or fewer.</li>
+<li><strong>ERNIE-Layout's own long-sequence variant</strong> (rotary positions) in its PyTorch port dropped to 28 F1, because it throws away the learned positions.</li>
+<li><strong>Padding ERNIE-Layout on the right</strong>, as its original PaddleNLP code does, gave the same accuracy as the port's left padding after fine-tuning.</li>
+</ul>
+
+<h2>Details for practitioners</h2>
+<p><strong>V100.</strong> I measured on an A100 limited to 15 GB and to the kernels a V100 supports, not on a real V100. The lookup version uses PyTorch's built-in memory-efficient attention, which runs on V100 tensor cores. I also tried FlexAttention, which keeps memory flat even at 8192 tokens (0.87 GB) and is fast on an A100. It compiles with Triton, though, which no longer uses tensor cores on pre-Ampere GPUs, so I don't recommend it for a V100.</p>
+<p><strong>What is new.</strong> Repeating position embeddings (<a href="https://arxiv.org/abs/2004.05150">Longformer</a>, 2020), converting models to long inputs with sparse attention (<a href="https://arxiv.org/abs/2210.15497">LSG</a>, 2022), extending embedding models without training (<a href="https://arxiv.org/abs/2404.12096">LongEmbed</a>, 2024) and exact relative-position attention kernels (<a href="https://arxiv.org/abs/2611.01182">arXiv 2611.01182</a>, 2026) all exist. What I have not seen elsewhere is the combination for layout models: their 1D and 2D position scores, no pre-training, exact attention, plain PyTorch kernels that run on a V100, and evidence on real long pages.</p>
+<p><strong>Code.</strong> Everything is in <a href="https://github.com/14H034160212/layoutlmv3-pretraining">14H034160212/layoutlmv3-pretraining</a>: the changes in <code>src/layoutlmv3_pretraining/long_docs.py</code>, data conversion in <code>scripts/prepare_vrdu.py</code> and <code>scripts/prepare_realkie.py</code>, and every result in <code>results/long_docs/</code>. To train LayoutLMv3 on whole pages:</p>
+<pre><code>python scripts/finetune_funsd.py --task vrdu --model microsoft/layoutlmv3-base --protocol strict \
+  --extend_positions --max_length 2048 --attention lut --dynamic_padding</code></pre>
+<p><strong>Upstream.</strong> The memory change for LayoutLMv3 is proposed in transformers <a href="https://github.com/huggingface/transformers/pull/50688">#50688</a>. Fixes for the ERNIE-Layout PyTorch port: <a href="https://github.com/NormXU/ERNIE-Layout-Pytorch/pull/27">#27</a> (image normalised twice), <a href="https://github.com/NormXU/ERNIE-Layout-Pytorch/pull/30">#30</a> (tokenizer on recent transformers), <a href="https://github.com/NormXU/ERNIE-Layout-Pytorch/pull/31">#31</a> (position scores, faster training).</p>
+<p class="small"><strong>Runs (W&amp;B).</strong> Order forms, LayoutLMv3: <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/rqakzlmm">cut</a>, <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/xsm2yq39">windows</a>, <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/eybwos7p">whole page</a>; ERNIE-Layout: <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/7hwey8v6">cut</a>, <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/4b0td6ek">windows</a>, <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/ax6vuu0v">whole page</a>. Registration forms, LayoutLMv3: <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/7rzkk056">cut</a>, <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/v5yda92v">windows</a>, <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/n6q9h7hh">whole page</a>; ERNIE-Layout: <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/smrfupru">cut</a>, <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/f3tdl4ve">windows</a>, <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/hmwlf3sh">whole page</a>. Invoices, LayoutLMv3: <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/92l0mlu1">cut</a>, <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/shq41vnk">windows</a>, <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/mepkvzug">whole page</a>; ERNIE-Layout: <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/3xoyp62h">cut</a>, <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/84cgkq77">windows</a>, <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/mq7qro82">whole page</a>. Training curves: <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/472zb7o1">cut</a>, <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/wvh50gmg">whole page</a>. Same result from four implementations: <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/wj2p542x">run</a>. Position interpolation: <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/8y0ugs4w">LayoutLMv3</a>, <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/5hpa6h7e">ERNIE-Layout</a>. ERNIE-Layout padding: <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/p9hq7xu7">left</a>, <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/mrpm2sn9">right</a>. The README lists the remaining runs and the exact numbers.</p>
+
+<h2>Still to check</h2>
+<ul>
+<li>The memory and speed on a real V100.</li>
+<li>Accuracy beyond 2048 tokens: none of the three datasets has labels past 2048.</li>
+<li>Grouping line-item fields into rows, rather than only recognising each field.</li>
 </ul>
 <p><em>I used Claude (Anthropic) to help implement the code, run the experiments and draft this post. I reviewed the results and the post myself.</em></p>
 <hr />
