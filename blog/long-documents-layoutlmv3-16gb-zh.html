@@ -63,6 +63,21 @@ pre code { padding: 0; }
 <p><strong>ERNIE-Layout</strong>（通过社区的 PyTorch 移植版，用同样的位置复制）在同样的页面上结论一致：截断 70.87 ± 0.18，滑动窗口 92.78 ± 0.30，位置扩展到 2048 为 92.88 ± 0.17（W&amp;B：<a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/7hwey8v6">512</a>、<a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/4b0td6ek">窗口</a>、<a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/ax6vuu0v">2048</a>）。读完整页同样比截断高 22 分，但对 ERNIE-Layout 来说和滑动窗口打平（+0.10，配对 t 检验 p = 0.28）；而 LayoutLMv3 比窗口高 1.6 分，5 个种子全部更好（p = 0.007）。</p>
 <p>速度靠动态补齐：每个批次只补齐到其中最长的文档，而不是补到 2048，所以短页面的开销和 512 的模型一样，只有真正长的页面才多花时间。2048 的微调时间是截断的 1.5 倍，而不是 4 倍。</p>
 
+<h2>另外两个真实长文档数据集</h2>
+<p>只有一个数据集说服力不够，所以我在另外两组真实长文档上重复了这个对比。第一组是 VRDU 的 Registration Forms：美国外国代理人登记文件，截断到 512 会丢掉 52.1% 的标注词，大多是页面底部的签字人和职务。第二组是 <a href="https://arxiv.org/abs/2403.20101">RealKIE</a> 的 FCC Invoices：370 张真实的电视广告发票，每张有好几页，既有文档级字段，也有 5 个 line item 字段（描述、播出日期、开始和结束日期、单价）。截断到 512 会丢掉 58.1% 的标注词，1024 仍会丢掉 21.2%。训练设置相同，各 5 个种子：</p>
+<table>
+<thead><tr><th>数据集</th><th>模型</th><th>截断到 512</th><th>滑动窗口</th><th>读完整页</th></tr></thead>
+<tbody>
+<tr><td>VRDU Ad-buy（订单）</td><td>LayoutLMv3</td><td class="n">68.31</td><td class="n">90.97</td><td class="n"><strong>92.52</strong>（2048）</td></tr>
+<tr><td></td><td>ERNIE-Layout</td><td class="n">70.87</td><td class="n">92.78</td><td class="n"><strong>92.88</strong>（2048）</td></tr>
+<tr><td>VRDU Registration（登记表）</td><td>LayoutLMv3</td><td class="n">63.96</td><td class="n"><strong>88.65</strong></td><td class="n">87.82（1024）</td></tr>
+<tr><td></td><td>ERNIE-Layout</td><td class="n">57.07</td><td class="n"><strong>90.18</strong></td><td class="n">89.45（1024）</td></tr>
+<tr><td>RealKIE FCC（含 line items 的发票）</td><td>LayoutLMv3</td><td class="n">42.46</td><td class="n">66.39</td><td class="n"><strong>67.57</strong>（2048）</td></tr>
+<tr><td></td><td>ERNIE-Layout</td><td class="n">46.09</td><td class="n">66.74</td><td class="n"><strong>66.99</strong>（2048）</td></tr>
+</tbody>
+</table>
+<p>主结论在每个数据集、两个模型上都成立：读完整页（滑动窗口或扩展位置）比截断高 20 到 33 分，5 个种子全部更好。在两种读完整页的方法之间，LayoutLMv3 用 2048 在订单和发票上领先滑动窗口（RealKIE 上 +1.2，5/5 个种子，p = 0.011）；在登记表上，1024 已经能覆盖所有页面，两者打平。ERNIE-Layout 在三个数据集上都和滑动窗口打平。发票对两个模型都很难：line item 表格密集、OCR 有噪声，所以绝对分数较低。W&amp;B：RealKIE LayoutLMv3 <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/92l0mlu1">512</a>、<a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/shq41vnk">窗口</a>、<a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/mepkvzug">2048</a>；Registration LayoutLMv3 <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/7rzkk056">512</a>、<a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/v5yda92v">窗口</a>、<a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/n6q9h7hh">1024</a>；全部实验记录列在仓库 README 里。RealKIE 的许可证是 CC BY-NC 4.0。</p>
+<p>我最先测量的两个公开发票、收据数据集 FATURA 和 SROIE 太短，测不出差别：最长的页面分别只有 249 和 537 个 token，截断不会丢掉任何标注。公开的发票数据集大多是单页短文档，所以上面这些长文档数据集才更有价值。</p>
 <h2>哪些做法没有效果，以及原因</h2>
 <p><strong>插值位置编码，而不是复制。</strong>位置插值是常用的扩展长度方法，它把 512 个预训练位置均匀拉伸到 2048。在这里它对两个模型都不如复制：LayoutLMv3 为 91.81，复制为 92.52（5 个种子，配对 t 检验 p &lt; 0.001，<a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/8y0ugs4w">W&amp;B</a>）；ERNIE-Layout 为 91.51，复制为 92.88（p = 0.002，<a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/5hpa6h7e">W&amp;B</a>）。</p>
 <p>插值出来的向量本身没有问题：相邻的预训练位置很相似（余弦 0.89），所以每个插值向量都接近某个学过的向量（余弦 0.99）。问题在于位置被挪动了。把 2048 个位置压进预训练的范围，每个 token 的位置都变了：第 300 个 token 拿到的大约是原来第 75 个位置的编码，同一个位置插值前后的余弦相似度只有 0.28。而相对位置偏置看到的仍是真实距离，两种位置信息互相矛盾。复制则让前 512 个位置保持预训练时的样子。按页面长度拆分测试集（1 个种子），可以看出损失来自哪里：</p>
@@ -102,7 +117,7 @@ pre code { padding: 0; }
 
 <h2>接下来</h2>
 <ul>
-<li>在第二个长文档数据集上验证，并测试 4096 及更长的准确率：VRDU 里没有超过 2048 的标注词。</li>
+<li>测试 4096 及更长的准确率：三个数据集里都没有超过 2048 的标注词。</li>
 <li>在 LSG 和 Longformer 的长文本基准上做对比，检验"复制位置 + 精确注意力"对纯文本 encoder 是否同样成立。</li>
 <li>像 <a href="https://arxiv.org/abs/2505.12044">FlashBias</a>（NeurIPS 2025）处理其他偏置那样，把版面偏置分解成低秩项拼进 query 和 key，彻底不构建 n × n 偏置。</li>
 <li>在真正的 V100 上确认这些数字。</li>
