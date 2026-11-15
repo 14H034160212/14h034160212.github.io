@@ -87,7 +87,7 @@ pre code { padding: 0; }
 <h2>还需要验证的</h2>
 <ul>
 <li>在真正的 V100 上的显存和速度。</li>
-<li>超过 2048 个 token 时的准确率：三个数据集里都没有超过 2048 的标注。</li>
+<li>更长页面上的准确率。我在发票数据上用 4096 个 token 训练了一次：LayoutLMv3 67.89，ERNIE-Layout 67.33，和 2048 相比差别在随机波动范围内（<a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/7hpcxa09">LayoutLMv3</a>、<a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/kbjl4ztf">ERNIE-Layout</a>）。16 GB 显卡可以训练，但这批发票只有 2.4% 的页面超过 2048 个 token，所以要看出更长输入的好处，还需要页面更长的数据集。</li>
 <li>把明细行的字段按行分组，而不只是识别每个字段。</li>
 </ul>
 <p><em>编写代码、运行实验和撰写本文时，我使用了 Claude（Anthropic）辅助。所有结果和文章都经过我本人审阅。</em></p>

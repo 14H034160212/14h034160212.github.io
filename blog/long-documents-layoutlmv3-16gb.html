@@ -87,7 +87,7 @@ pre code { padding: 0; }
 <h2>Still to check</h2>
 <ul>
 <li>The memory and speed on a real V100.</li>
-<li>Accuracy beyond 2048 tokens: none of the three datasets has labels past 2048.</li>
+<li>Accuracy on longer pages. I trained on the invoices at 4096 tokens: LayoutLMv3 67.89, ERNIE-Layout 67.33, the same as 2048 within noise (<a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/7hpcxa09">LayoutLMv3</a>, <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/kbjl4ztf">ERNIE-Layout</a>). It trains on a 16 GB card, but only 2.4% of these pages go past 2048 tokens, so the gain of longer inputs still needs a dataset with longer pages.</li>
 <li>Grouping line-item fields into rows, rather than only recognising each field.</li>
 </ul>
 <p><em>I used Claude (Anthropic) to help implement the code, run the experiments and draft this post. I reviewed the results and the post myself.</em></p>
