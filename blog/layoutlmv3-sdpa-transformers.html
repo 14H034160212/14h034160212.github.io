@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LayoutLMv3 now runs on SDPA in Transformers | Qiming Bao</title>
+<meta name="description" content="How LayoutLMv3 in Hugging Face Transformers moved to the attention interface: SDPA and flex attention, relative position biases built once instead of in every layer, fp32 outputs bit-identical to before, and a 2048-token training step that used to run out of memory now fits in 7 GiB.">
+<link rel="canonical" href="https://14h034160212.github.io/blog/layoutlmv3-sdpa-transformers.html">
+<link rel="alternate" hreflang="en" href="https://14h034160212.github.io/blog/layoutlmv3-sdpa-transformers.html">
+<link rel="alternate" hreflang="zh-CN" href="https://14h034160212.github.io/blog/layoutlmv3-sdpa-transformers-zh.html">
+<link rel="icon" type="image/jpeg" href="../qiming.jpg">
+<style>
+:root { --fg:#1f2328; --muted:#59636e; --bg:#ffffff; --code:#f6f8fa; --line:#d1d9e0; --link:#0969da; }
+@media (prefers-color-scheme: dark) { :root { --fg:#e6edf3; --muted:#9198a1; --bg:#0d1117; --code:#161b22; --line:#3d444d; --link:#4493f8; } }
+body { font-family: -apple-system, "Segoe UI", Arial, sans-serif; color:var(--fg); background:var(--bg); margin:0; line-height:1.65; }
+main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: 1.9rem; line-height:1.25; margin: 0.4em 0 0.2em; }
+h2 { margin-top: 2em; border-bottom:1px solid var(--line); padding-bottom:.2em; }
+a { color: var(--link); }
+.meta { color: var(--muted); font-size: .92rem; }
+table { border-collapse: collapse; margin: 1em 0; display:block; overflow-x:auto; }
+th, td { border: 1px solid var(--line); padding: 6px 12px; }
+th { background: var(--code); }
+pre { background: var(--code); padding: 12px; overflow-x: auto; border-radius: 6px; }
+code { background: var(--code); padding: 1px 4px; border-radius: 4px; font-size: .92em; }
+pre code { padding: 0; }
+</style>
+</head>
+<body>
+<main>
+<p class="meta"><a href="../index.html">Qiming Bao</a> · Blog · 17 November 2026 · English / <a href="layoutlmv3-sdpa-transformers-zh.html">中文</a></p>
+<h1>LayoutLMv3 now runs on SDPA in Transformers</h1>
+<p>Until this week, LayoutLMv3 in Hugging Face Transformers only had a hand-written eager attention, and every layer rebuilt its relative position biases from scratch. My PR <a href="https://github.com/huggingface/transformers/pull/50688">huggingface/transformers#50688</a> moved it to the library's attention interface, so it now runs on PyTorch's SDPA and on flex attention. The same PR closed the long-standing request for it, <a href="https://github.com/huggingface/transformers/issues/35467">#35467</a>. The PR was merged on 17 November 2026, so the change is on <code>main</code> and will ship in the next release.</p>
+<p>The short version, for token classification with <code>microsoft/layoutlmv3-base</code> on an A100 with fp16 autocast:</p>
+<table>
+<thead><tr><th>text tokens</th><th>mode</th><th>batch</th><th>before (eager)</th><th>now (SDPA)</th></tr></thead>
+<tbody>
+<tr><td>512</td><td>inference</td><td>8</td><td>51.7 ms / 1.81 GiB</td><td><strong>28.3 ms / 1.27 GiB</strong></td></tr>
+<tr><td>512</td><td>train step</td><td>8</td><td>129.7 ms / 9.58 GiB</td><td><strong>64.4 ms / 5.06 GiB</strong></td></tr>
+<tr><td>2048</td><td>inference</td><td>2</td><td>119.2 ms / 3.45 GiB</td><td><strong>49.2 ms / 2.07 GiB</strong></td></tr>
+<tr><td>2048</td><td>train step</td><td>2</td><td>out of memory (15 GiB cap)</td><td><strong>94.3 ms / 6.98 GiB</strong></td></tr>
+</tbody>
+</table>
+<p>Times are the mean of 10 iterations, peak memory is in GiB, and every other sample in the batch is padded. The GPU was shared with other jobs, so treat the times as rough. The 2048-token rows use text position embeddings resized to 2050. That is not a published configuration, but it is how I run LayoutLMv3 on whole pages (see <a href="long-documents-layoutlmv3-16gb.html">Long documents with LayoutLMv3 on a 16 GB GPU</a>).</p>
+
+<h2>What was slow</h2>
+<p>LayoutLMv3 adds two learned relative position biases to the attention scores. One is over token positions. The other is over the x and y coordinates of the bounding boxes. Both have shape <code>(batch, heads, n, n)</code>, and both are identical in every layer. The old code still rebuilt them in each layer. It bucketed every (query, key) pair in fp32, gathered from the bias tables, and then ran its own softmax. The softmax was a numerically stabilized variant from the CogView paper. That made SDPA impossible and created several <code>n x n</code> fp32 temporaries per layer. At 2048 tokens, those temporaries are what ran a training step out of memory.</p>
+
+<h2>Three changes</h2>
+<p><strong>1. Attention through the interface.</strong> The self-attention now dispatches through <code>ALL_ATTENTION_FUNCTIONS</code>, like BERT, and passes the bias as <code>position_bias</code>, like T5. SDPA and flex attention both accept an additive bias, so they work without special cases. FlashAttention does not accept one, so it stays unsupported. That is the same situation as UDOP.</p>
+<p><strong>2. Build the biases once.</strong> The encoder computes the combined bias once per forward pass and passes it to every layer.</p>
+<p><strong>3. Bucket the distances, not the pairs.</strong> A relative-position bucket depends only on the distance, and it saturates beyond <code>max_distance</code>. So the code buckets the <code>2 * max_distance + 1</code> possible distances once, clamps the pairwise distances, and gathers with one <code>index_select</code>. A new test checks this against bucketing every pair, with zero tolerance, on 600 positions and box coordinates up to 1000.</p>
+
+<h2>Why the outputs did not change</h2>
+<p>Swapping the softmax was the part I was most careful about, because LayoutLMv3 has many fine-tuned checkpoints downstream. The CogView trick computes <code>(x/α - max(x/α)) · α</code> before the softmax, with α = 32. Because 32 is a power of two, dividing and multiplying by it is exact in floating point. The expression is therefore exactly <code>x - max(x)</code>, and a softmax subtracts the max internally anyway. I checked this on the real model instead of trusting the argument. With <code>microsoft/layoutlmv3-base</code>, a batch of 3 with padding and 512 text tokens plus 197 image patches, the eager fp32 outputs of the new code are bit-identical to the old code on CPU and on an A100. The 211 gradients differ by at most 1.1e-7, because the old max subtraction sat in the backward graph. Against eager, SDPA differs by 3.2e-6 on CPU and 1.6e-5 on the A100 (token classification logits, fp32). In fp16 and bf16 the old and new code differ at rounding level.</p>
+
+<h2>What review changed</h2>
+<p>vasqu reviewed the PR for Hugging Face. Three of his requests changed the design:</p>
+<ul>
+<li><strong>Pass the bias through the interface.</strong> My first version merged the bias into the attention mask once and shared the mask across layers. He asked for the standard <code>position_bias</code> argument instead. It is cleaner, but in training SDPA now combines the bias with the padding mask in every layer and keeps each copy for backward. The 2048-token training step peaks at 6.98 GiB instead of 3.54 GiB. I flagged the trade-off in the PR. It is still far below the old code, which ran out of memory.</li>
+<li><strong>Use the standard eager function.</strong> This one had a hidden reason. PP-DocLayoutV2 reuses LayoutLMv3's classes through Transformers' "modular" code generation, and its generated file has a single <code>eager_attention_forward</code> that its RT-DETR attention also calls. A CogView version under that name would have changed the detector's attention too. With the plain softmax, PP-DocLayoutV2's outputs stay bit-identical. Its reading-order model now supports SDPA and flex as well: in fp32, eager, SDPA and flex agree within 4.8e-8.</li>
+<li><strong>Fix the test setup, not the test.</strong> The common flex test enlarges <code>hidden_size</code> when the head size is below 16, which breaks LayoutLMv3's layout embeddings. I had overridden the test. He suggested changing the tester's initial values instead. With 2 heads instead of 4, the head size is 18 and the common test runs unchanged.</li>
+</ul>
+
+<h2>Using it</h2>
+<p>Nothing changes in your code: SDPA is the default when it is available. The snippet below runs on current <code>main</code>:</p>
+<pre><code>import torch
+from PIL import Image
+from transformers import AutoProcessor, LayoutLMv3ForTokenClassification
+
+processor = AutoProcessor.from_pretrained("microsoft/layoutlmv3-base", apply_ocr=False)
+model = LayoutLMv3ForTokenClassification.from_pretrained("microsoft/layoutlmv3-base", num_labels=5)
+print(model.config._attn_implementation)  # "sdpa"
+
+image = Image.new("RGB", (800, 1000), "white")
+words = ["Invoice", "number", "12345"]
+boxes = [[10, 10, 80, 30], [90, 10, 160, 30], [170, 10, 230, 30]]
+inputs = processor(image, words, boxes=boxes, return_tensors="pt")
+with torch.no_grad():
+    print(model(**inputs).logits.shape)  # torch.Size([1, 7, 5])</code></pre>
+<p>Two things to know:</p>
+<ul>
+<li><code>output_attentions=True</code> needs <code>attn_implementation="eager"</code>, as for BERT.</li>
+<li>The PR title carries Transformers' 🚨 marker for breaking changes. The private attention helpers changed, so code that patched <code>cogview_attention</code> or the per-layer <code>rel_pos</code> / <code>rel_2d_pos</code> arguments needs updating.</li>
+</ul>
+
+<p>I used an AI coding assistant (Claude) to help write the code, tests and benchmarks, and I checked the results myself.</p>
+</main>
+</body>
+</html>

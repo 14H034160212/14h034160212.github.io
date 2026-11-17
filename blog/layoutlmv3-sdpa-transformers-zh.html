@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Transformers 里的 LayoutLMv3 现在可以用 SDPA 了 | Qiming Bao</title>
+<meta name="description" content="Hugging Face Transformers 中的 LayoutLMv3 改用注意力接口：支持 SDPA 和 flex attention，相对位置偏置每次前向只算一次，fp32 输出与改动前逐位一致；原来显存不够的 2048 token 训练步现在只需 7 GiB。">
+<link rel="canonical" href="https://14h034160212.github.io/blog/layoutlmv3-sdpa-transformers-zh.html">
+<link rel="alternate" hreflang="en" href="https://14h034160212.github.io/blog/layoutlmv3-sdpa-transformers.html">
+<link rel="alternate" hreflang="zh-CN" href="https://14h034160212.github.io/blog/layoutlmv3-sdpa-transformers-zh.html">
+<link rel="icon" type="image/jpeg" href="../qiming.jpg">
+<style>
+:root { --fg:#1f2328; --muted:#59636e; --bg:#ffffff; --code:#f6f8fa; --line:#d1d9e0; --link:#0969da; }
+@media (prefers-color-scheme: dark) { :root { --fg:#e6edf3; --muted:#9198a1; --bg:#0d1117; --code:#161b22; --line:#3d444d; --link:#4493f8; } }
+body { font-family: -apple-system, "Segoe UI", Arial, sans-serif; color:var(--fg); background:var(--bg); margin:0; line-height:1.65; }
+main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: 1.9rem; line-height:1.25; margin: 0.4em 0 0.2em; }
+h2 { margin-top: 2em; border-bottom:1px solid var(--line); padding-bottom:.2em; }
+a { color: var(--link); }
+.meta { color: var(--muted); font-size: .92rem; }
+table { border-collapse: collapse; margin: 1em 0; display:block; overflow-x:auto; }
+th, td { border: 1px solid var(--line); padding: 6px 12px; }
+th { background: var(--code); }
+pre { background: var(--code); padding: 12px; overflow-x: auto; border-radius: 6px; }
+code { background: var(--code); padding: 1px 4px; border-radius: 4px; font-size: .92em; }
+pre code { padding: 0; }
+</style>
+</head>
+<body>
+<main>
+<p class="meta"><a href="../index.html">Qiming Bao</a> · Blog · 2026 年 11 月 17 日 · <a href="layoutlmv3-sdpa-transformers.html">English</a> / 中文</p>
+<h1>Transformers 里的 LayoutLMv3 现在可以用 SDPA 了</h1>
+<p>到这周为止，Hugging Face Transformers 里的 LayoutLMv3 只有一个手写的 eager 注意力，而且每一层都要从头重建一遍相对位置偏置。我的 PR <a href="https://github.com/huggingface/transformers/pull/50688">huggingface/transformers#50688</a> 把它迁移到了库的注意力接口上，现在可以直接用 PyTorch 的 SDPA，也可以用 flex attention。这个 PR 同时关闭了一个提了很久的功能请求 <a href="https://github.com/huggingface/transformers/issues/35467">#35467</a>。PR 已于 2026 年 11 月 17 日合并，改动已经在 <code>main</code> 上，会随下一个版本发布。</p>
+<p>先看结果。用 <code>microsoft/layoutlmv3-base</code> 做 token 分类，A100，fp16 autocast：</p>
+<table>
+<thead><tr><th>文本 token 数</th><th>模式</th><th>batch</th><th>之前（eager）</th><th>现在（SDPA）</th></tr></thead>
+<tbody>
+<tr><td>512</td><td>推理</td><td>8</td><td>51.7 ms / 1.81 GiB</td><td><strong>28.3 ms / 1.27 GiB</strong></td></tr>
+<tr><td>512</td><td>训练一步</td><td>8</td><td>129.7 ms / 9.58 GiB</td><td><strong>64.4 ms / 5.06 GiB</strong></td></tr>
+<tr><td>2048</td><td>推理</td><td>2</td><td>119.2 ms / 3.45 GiB</td><td><strong>49.2 ms / 2.07 GiB</strong></td></tr>
+<tr><td>2048</td><td>训练一步</td><td>2</td><td>显存不够（上限 15 GiB）</td><td><strong>94.3 ms / 6.98 GiB</strong></td></tr>
+</tbody>
+</table>
+<p>时间取 10 次迭代的平均值，显存是峰值（GiB），batch 里每隔一个样本有 padding。GPU 当时和别的任务共用，所以时间只能作为大致参考。2048 token 那两行把文本位置嵌入扩到了 2050。这不是官方发布的配置，但我就是这样用 LayoutLMv3 处理整页文档的（见<a href="long-documents-layoutlmv3-16gb-zh.html">《在 16 GB 显卡上用 LayoutLMv3 处理长文档》</a>）。</p>
+
+<h2>原来慢在哪里</h2>
+<p>LayoutLMv3 会在注意力分数上加两个可学习的相对位置偏置：一个基于 token 位置，一个基于边界框的 x、y 坐标。两者形状都是 <code>(batch, heads, n, n)</code>，而且每一层都完全一样。旧代码却在每一层都重新构建一遍：用 fp32 对每一对 (query, key) 做分桶，再到偏置表里取值，最后跑自己的 softmax。这个 softmax 是 CogView 论文里一个提高数值稳定性的变体。这样一来，SDPA 用不上，每层还会产生好几个 <code>n x n</code> 的 fp32 临时张量。在 2048 token 时，正是这些临时张量让训练一步就爆了显存。</p>
+
+<h2>三处改动</h2>
+<p><strong>1. 走注意力接口。</strong>自注意力现在像 BERT 一样通过 <code>ALL_ATTENTION_FUNCTIONS</code> 分发，并像 T5 一样把偏置作为 <code>position_bias</code> 传进去。SDPA 和 flex attention 都支持加性偏置，不需要任何特殊处理。FlashAttention 不支持加性偏置，所以仍然不支持，这和 UDOP 的情况一样。</p>
+<p><strong>2. 偏置只算一次。</strong>编码器每次前向只计算一次合并后的偏置，再传给每一层。</p>
+<p><strong>3. 对距离分桶，而不是对每一对分桶。</strong>相对位置的桶只取决于距离，并且超过 <code>max_distance</code> 后不再变化。所以代码只对 <code>2 * max_distance + 1</code> 个可能的距离分一次桶，把成对距离截断到这个范围，再用一次 <code>index_select</code> 取值。新加的测试在 600 个位置、坐标最大到 1000 的输入上，以零容差把它和“逐对分桶”做对比。</p>
+
+<h2>为什么输出没有变</h2>
+<p>替换 softmax 是我最小心的一步，因为下游有大量基于 LayoutLMv3 微调的模型。CogView 的技巧是在 softmax 之前计算 <code>(x/α - max(x/α)) · α</code>，其中 α = 32。32 是 2 的幂，在浮点数里除以它再乘回来是精确的，所以这个式子恰好等于 <code>x - max(x)</code>；而 softmax 内部本来就会减去最大值。我没有只靠推理，而是在真实模型上做了验证。用 <code>microsoft/layoutlmv3-base</code>、batch 为 3（含 padding）、512 个文本 token 加 197 个图像 patch，新代码的 eager fp32 输出与旧代码在 CPU 和 A100 上都逐位一致。211 个梯度最多相差 1.1e-7，原因是旧代码的减最大值操作在反向图里。和 eager 相比，SDPA 的差异在 CPU 上为 3.2e-6，在 A100 上为 1.6e-5（token 分类 logits，fp32）。在 fp16 和 bf16 下，新旧代码的差异处于舍入误差级别。</p>
+
+<h2>review 改变了什么</h2>
+<p>Hugging Face 的 vasqu 审了这个 PR，他的三个要求改变了设计：</p>
+<ul>
+<li><strong>通过接口传偏置。</strong>我的第一版把偏置一次性合进注意力 mask，所有层共用。他要求改用标准的 <code>position_bias</code> 参数。这样更干净，代价是训练时 SDPA 会在每一层把偏置和 padding mask 合并一次，并为反向传播各保留一份。2048 token 训练一步的峰值显存从 3.54 GiB 变成 6.98 GiB。我在 PR 里说明了这个取舍，它仍然远低于原来那个会爆显存的版本。</li>
+<li><strong>用标准的 eager 函数。</strong>这条背后有个不明显的原因。PP-DocLayoutV2 通过 Transformers 的 modular 代码生成复用了 LayoutLMv3 的类，它生成的文件里只有一个 <code>eager_attention_forward</code>，RT-DETR 检测部分的注意力也调用它。如果这个名字下是 CogView 版本，检测器的注意力也会被一起改掉。换成普通 softmax 后，PP-DocLayoutV2 的输出保持逐位一致。它的阅读顺序模型现在也支持 SDPA 和 flex：在 fp32 下，eager、SDPA、flex 三者相差不超过 4.8e-8。</li>
+<li><strong>修测试配置，而不是改测试。</strong>通用的 flex 测试在每个头小于 16 维时会放大 <code>hidden_size</code>，这会破坏 LayoutLMv3 的版面嵌入。我原来覆盖了这个测试，他建议直接改测试配置的初始值。把头数从 4 改成 2 后，每个头 18 维，通用测试不用任何修改就能跑。</li>
+</ul>
+
+<h2>怎么用</h2>
+<p>你的代码不需要任何改动：只要环境支持，SDPA 就是默认实现。下面这段代码在当前的 <code>main</code> 上可以运行：</p>
+<pre><code>import torch
+from PIL import Image
+from transformers import AutoProcessor, LayoutLMv3ForTokenClassification
+
+processor = AutoProcessor.from_pretrained("microsoft/layoutlmv3-base", apply_ocr=False)
+model = LayoutLMv3ForTokenClassification.from_pretrained("microsoft/layoutlmv3-base", num_labels=5)
+print(model.config._attn_implementation)  # "sdpa"
+
+image = Image.new("RGB", (800, 1000), "white")
+words = ["Invoice", "number", "12345"]
+boxes = [[10, 10, 80, 30], [90, 10, 160, 30], [170, 10, 230, 30]]
+inputs = processor(image, words, boxes=boxes, return_tensors="pt")
+with torch.no_grad():
+    print(model(**inputs).logits.shape)  # torch.Size([1, 7, 5])</code></pre>
+<p>有两点需要注意：</p>
+<ul>
+<li>和 BERT 一样，<code>output_attentions=True</code> 需要设置 <code>attn_implementation="eager"</code>。</li>
+<li>PR 标题带有 Transformers 表示破坏性改动的 🚨 标记。内部的注意力辅助函数变了，如果你的代码改过 <code>cogview_attention</code>，或者用到了每层的 <code>rel_pos</code> / <code>rel_2d_pos</code> 参数，需要相应更新。</li>
+</ul>
+
+<p>代码、测试和基准测试是我借助 AI 编程助手（Claude）完成的，结果由我本人核对。</p>
+</main>
+</body>
+</html>
