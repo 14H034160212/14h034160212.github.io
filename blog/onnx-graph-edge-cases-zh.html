@@ -30,6 +30,7 @@ pre code { padding: 0; }
 <main>
 <p class="meta"><a href="../index.html">Qiming Bao</a> · Blog · 2026 年 11 月 12 日 · <a href="onnx-graph-edge-cases.html">English</a> / 中文</p>
 <h1>ONNX 图里三个容易被工具忽略的细节</h1>
+<p class="meta"><em>2026 年 11 月 18 日更新：microsoft/onnxruntime 和 microsoft/onnxscript 从 2026 年 11 月 17 日起无法访问（返回 404），本文中指向这些仓库的链接暂时打不开。</em></p>
 <p>这周我修了 ONNX 工具链里的三个 bug：两个在 ONNX Runtime 的图优化器里，一个在我自己写的导出代码里。它们都没有让程序崩溃，只是让模型跑得比应有的慢一点，或者让测试只在 CI 上失败。三个问题都来自 ONNX 格式里一些很小、写图优化或导出器时容易忽略的细节。</p>
 
 <h2>1. 空名字的可选输入，不等于省略的输入</h2>

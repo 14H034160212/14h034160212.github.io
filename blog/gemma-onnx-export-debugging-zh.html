@@ -31,6 +31,7 @@ blockquote { margin: 1em 0; padding: 0 1em; color: var(--muted); border-left: 4p
 <main>
 <p class="meta"><a href="../index.html">Qiming Bao</a> · Blog · 2026 年 11 月 11 日 · <a href="gemma-onnx-export-debugging.html">English</a> / 中文</p>
 <h1>一个“乱码”报告背后的三个 bug：排查 Gemma 在 ONNX Runtime GenAI 中的导出问题</h1>
+<p class="meta"><em>2026 年 11 月 18 日更新：microsoft/onnxruntime-genai 从 2026 年 11 月 17 日起无法访问（返回 404），本文中指向这些仓库的链接暂时打不开。</em></p>
 <p>用 ONNX Runtime GenAI 的 model builder 导出 Gemma 3 4B 之后，问它一个波斯语问题，它回答的是空字符串；同一个 checkpoint 放在 transformers 里却回答得好好的。这个问题（<a href="https://github.com/microsoft/onnxruntime-genai/issues/2277">microsoft/onnxruntime-genai#2277</a>）从今年 7 月起一直没人解决。顺着它查下去，我在 builder 里找到了三个独立的 bug。比起具体的修复，找到它们的方法更值得分享。</p>
 <p>这篇文章讲三件事：怎么和 transformers 逐 token 对比；怎么用一个对照实验证明根因；以及怎么区分“真的有数值 bug”和“模型本身对数值敏感”。下文所有数字都来自 CPU 上的 fp32 构建和贪心解码。</p>
 

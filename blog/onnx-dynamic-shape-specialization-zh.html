@@ -30,6 +30,7 @@ pre code { padding: 0; }
 <main>
 <p class="meta"><a href="../index.html">Qiming Bao</a> · Blog · 2026 年 11 月 12 日 · <a href="onnx-dynamic-shape-specialization.html">English</a> / 中文</p>
 <h1>你的 ONNX 模型说输入是动态的，但有些其实不是</h1>
+<p class="meta"><em>2026 年 11 月 18 日更新：microsoft/onnxscript 从 2026 年 11 月 17 日起无法访问（返回 404），本文中指向这些仓库的链接暂时打不开。</em></p>
 <p>用 <code>dynamic_shapes</code> 导出之后，ONNX 模型的输入维度会变成符号维度，人们自然会以为这个模型现在能处理任意尺寸了。我逐个算子验证了这个假设：每个算子都把所有维度设成动态的来导出，然后用<em>另一个</em>尺寸运行，和 PyTorch 对比。大多数算子都通过了，有两个没有，其中一个会让 torchvision 的 VGG 出错。我把它报告成了 <a href="https://github.com/pytorch/pytorch/issues/204405">pytorch/pytorch#204405</a>。</p>
 
 <h2>测试方法</h2>

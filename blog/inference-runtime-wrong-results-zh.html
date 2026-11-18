@@ -31,6 +31,7 @@ pre code { padding: 0; }
 <p class="meta"><a href="../index.html">Qiming Bao</a> · Blog · 2026 年 11 月 14 日 · <a href="inference-runtime-wrong-results.html">English</a> / 中文</p>
 <h1>三个只给出错误结果、不报错的推理框架 bug</h1>
 <p>这周我修了三个推理框架的 bug：一个在 vLLM，两个在 ONNX Runtime。其中两个不报错也不警告，只是悄悄输出错误的数值；第三个会让图优化器在一个完全合法的模型上崩溃。每个修复都很小，8 到 30 行。大部分工作花在把问题范围不断缩小，直到原因一目了然，再证明修复只改变了该改变的东西。三个 PR 都在审核中。</p>
+<p class="meta"><em>2026 年 11 月 18 日更新：vLLM 的 PR 仍在审核中。microsoft/onnxruntime 仓库从 2026 年 11 月 17 日起无法访问（返回 404），所以两个 ONNX Runtime 的 PR 及相关链接暂时打不开。</em></p>
 
 <h2>1. vLLM：FP8 RMSNorm 在错误的地址读取跨步输入</h2>
 <p>vLLM 的一个 issue（<a href="https://github.com/vllm-project/vllm/issues/67411">#67411</a>）报告：当输入的最后一维不连续时（比如转置过的张量），<code>fused_add_rms_norm</code> 会算出错误的值。内核按 <code>input_stride * token + feature</code> 读取输入，这默认了 <code>input.stride(-1) == 1</code>。C++ 主机代码对 residual 检查了这一点，对 input 却没有。</p>

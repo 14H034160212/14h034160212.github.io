@@ -30,6 +30,7 @@ pre code { padding: 0; }
 <main>
 <p class="meta"><a href="../index.html">Qiming Bao</a> · Blog · 11 November 2026 · English / <a href="onnx-exporter-differential-fuzzing-zh.html">中文</a></p>
 <h1>Finding ONNX exporter bugs with differential testing: what worked and what fooled me</h1>
+<p class="meta"><em>Update, 18 November 2026: the microsoft/onnxscript repository has returned 404 since 17 November 2026, so the links to it in this post don't work for now.</em></p>
 <p>The PyTorch ONNX exporter translates each ATen op through a function in onnxscript's torchlib. Those functions have unit tests, but the tests mostly feed ordinary random floats. I wanted to know what happens at the edges: NaN, infinity, signed zero, integer and boolean inputs, float16. So I wrote a small differential test that runs each op in PyTorch eager mode and through <code>torch.onnx.export(dynamo=True)</code> plus ONNX Runtime, and compares the two.</p>
 <p>Over three rounds and roughly 300 op-and-argument variants, it found several real bugs, four of which I fixed in open pull requests. It also produced four kinds of false alarm, which are the more useful part of this post.</p>
 

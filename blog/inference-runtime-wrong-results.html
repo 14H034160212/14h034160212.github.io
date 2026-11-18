@@ -31,6 +31,7 @@ pre code { padding: 0; }
 <p class="meta"><a href="../index.html">Qiming Bao</a> · Blog · 14 November 2026 · English / <a href="inference-runtime-wrong-results-zh.html">中文</a></p>
 <h1>Three inference-runtime bugs that return wrong numbers instead of errors</h1>
 <p>This week I fixed three bugs in inference runtimes: one in vLLM and two in ONNX Runtime. Two of them return wrong values without any error or warning, and the third crashes a graph optimizer on a perfectly valid model. Each fix was small, between 8 and 30 lines. Most of the work was narrowing the problem down until the cause was obvious, and proving that the fix changes exactly what it should. The three PRs are under review.</p>
+<p class="meta"><em>Update, 18 November 2026: the vLLM PR is still under review. The microsoft/onnxruntime repository has returned 404 since 17 November 2026, so the two ONNX Runtime PRs and the links to them are unavailable for now.</em></p>
 
 <h2>1. vLLM: FP8 RMSNorm reads a strided input at the wrong addresses</h2>
 <p>A vLLM issue (<a href="https://github.com/vllm-project/vllm/issues/67411">#67411</a>) reported that <code>fused_add_rms_norm</code> computes wrong values when its input's last dimension is not contiguous, for example a transposed tensor. The kernel indexes the input as <code>input_stride * token + feature</code>, which assumes <code>input.stride(-1) == 1</code>. The C++ host code checked that for the residual, but not for the input.</p>

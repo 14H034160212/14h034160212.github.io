@@ -30,6 +30,7 @@ pre code { padding: 0; }
 <main>
 <p class="meta"><a href="../index.html">Qiming Bao</a> · Blog · 12 November 2026 · English / <a href="onnx-dynamic-shape-specialization-zh.html">中文</a></p>
 <h1>Your ONNX model says its inputs are dynamic. Some of them aren't</h1>
+<p class="meta"><em>Update, 18 November 2026: the microsoft/onnxscript repository has returned 404 since 17 November 2026, so the links to it in this post don't work for now.</em></p>
 <p>When you export with <code>dynamic_shapes</code>, the ONNX model's input axes come out symbolic, and it is natural to assume the model now works for any size. I tested that assumption op by op: export each op with every dimension dynamic, then run it at a <em>different</em> size and compare with PyTorch. Most ops passed. Two did not, and one of them breaks torchvision's VGG. I reported it as <a href="https://github.com/pytorch/pytorch/issues/204405">pytorch/pytorch#204405</a>.</p>
 
 <h2>The test</h2>

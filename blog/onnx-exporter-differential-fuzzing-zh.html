@@ -30,6 +30,7 @@ pre code { padding: 0; }
 <main>
 <p class="meta"><a href="../index.html">Qiming Bao</a> · Blog · 2026 年 11 月 11 日 · <a href="onnx-exporter-differential-fuzzing.html">English</a> / 中文</p>
 <h1>用差分测试找 ONNX 导出器的 bug：哪些有效，哪些骗了我</h1>
+<p class="meta"><em>2026 年 11 月 18 日更新：microsoft/onnxscript 从 2026 年 11 月 17 日起无法访问（返回 404），本文中指向这些仓库的链接暂时打不开。</em></p>
 <p>PyTorch 的 ONNX 导出器会把每个 ATen 算子交给 onnxscript 的 torchlib 里对应的函数来翻译。这些函数都有单元测试，但测试大多只喂普通的随机浮点数。我想知道在边界情况下会发生什么：NaN、无穷大、带符号的零、整数和布尔输入、float16。于是我写了一个小的差分测试，让每个算子分别在 PyTorch eager 模式下运行，以及经过 <code>torch.onnx.export(dynamo=True)</code> 再用 ONNX Runtime 运行，然后对比两边的结果。</p>
 <p>做了三轮，测了大约 300 个算子和参数的组合，找到了好几个真 bug，其中 4 个我已经提了修复 PR。它也产生了四类误报，而这才是这篇文章更有价值的部分。</p>
 

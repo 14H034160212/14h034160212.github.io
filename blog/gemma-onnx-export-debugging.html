@@ -31,6 +31,7 @@ blockquote { margin: 1em 0; padding: 0 1em; color: var(--muted); border-left: 4p
 <main>
 <p class="meta"><a href="../index.html">Qiming Bao</a> · Blog · 11 November 2026 · English / <a href="gemma-onnx-export-debugging-zh.html">中文</a></p>
 <h1>Three bugs behind one garbage-output report: debugging Gemma exports in ONNX Runtime GenAI</h1>
+<p class="meta"><em>Update, 18 November 2026: the microsoft/onnxruntime-genai repository has returned 404 since 17 November 2026, so the links to it in this post don't work for now.</em></p>
 <p>A Gemma 3 4B model exported with the ONNX Runtime GenAI model builder answered a Persian question with an empty string, while the same checkpoint in transformers answered correctly. That report, <a href="https://github.com/microsoft/onnxruntime-genai/issues/2277">microsoft/onnxruntime-genai#2277</a>, had been open since July. Chasing it led to three separate builder bugs, and the method that found them is worth more than any one fix.</p>
 <p>This post walks through that method: a token-for-token comparison against transformers, a controlled experiment that proves a root cause, and a check that tells a real numerical bug from a model that is merely sensitive. Every number below comes from fp32 CPU builds and greedy decoding.</p>
 

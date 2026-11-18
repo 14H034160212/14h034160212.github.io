@@ -84,6 +84,8 @@ with torch.no_grad():
 <li>The PR title carries Transformers' 🚨 marker for breaking changes. The private attention helpers changed, so code that patched <code>cogview_attention</code> or the per-layer <code>rel_pos</code> / <code>rel_2d_pos</code> arguments needs updating.</li>
 </ul>
 
+<p><em>Update, 18 November 2026:</em> a second fix in the same family was merged the next day. <a href="https://github.com/huggingface/transformers/pull/50455">huggingface/transformers#50455</a> fixes <code>only_label_first_subword</code> in the LayoutLMv2, LayoutXLM and MarkupLM tokenizers. With <code>stride</code> and overflowing windows, a window can start in the middle of a word, and that word's continuation pieces were labelled as if they were first subwords. A token is now labelled only if it starts a new word and its offset is 0.</p>
+
 <p>I used an AI coding assistant (Claude) to help write the code, tests and benchmarks, and I checked the results myself.</p>
 </main>
 </body>

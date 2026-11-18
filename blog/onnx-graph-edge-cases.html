@@ -30,6 +30,7 @@ pre code { padding: 0; }
 <main>
 <p class="meta"><a href="../index.html">Qiming Bao</a> · Blog · 12 November 2026 · English / <a href="onnx-graph-edge-cases-zh.html">中文</a></p>
 <h1>Three ONNX graph details that tools get wrong</h1>
+<p class="meta"><em>Update, 18 November 2026: the microsoft/onnxruntime and microsoft/onnxscript repositories have returned 404 since 17 November 2026, so the links to them in this post don't work for now.</em></p>
 <p>This week I fixed three bugs in ONNX tooling: two in ONNX Runtime's graph optimizer and one in my own exporter code. None of them crashed anything. A model ran a little slower than it should, or a test failed only in CI. All three come from small details of the ONNX format that are easy to miss when you write a graph pass or an exporter.</p>
 
 <h2>1. An empty optional input is not the same as an omitted one</h2>

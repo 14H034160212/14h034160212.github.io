@@ -84,6 +84,8 @@ with torch.no_grad():
 <li>PR 标题带有 Transformers 表示破坏性改动的 🚨 标记。内部的注意力辅助函数变了，如果你的代码改过 <code>cogview_attention</code>，或者用到了每层的 <code>rel_pos</code> / <code>rel_2d_pos</code> 参数，需要相应更新。</li>
 </ul>
 
+<p><em>2026 年 11 月 18 日更新：</em>第二天，同一系列的另一个修复也合并了。<a href="https://github.com/huggingface/transformers/pull/50455">huggingface/transformers#50455</a> 修复了 LayoutLMv2、LayoutXLM 和 MarkupLM 分词器的 <code>only_label_first_subword</code>。使用 <code>stride</code> 和溢出窗口时，一个窗口可能从某个词的中间开始，这个词后面的子词会被当作首个子词打上标签。现在只有开启新词、并且偏移为 0 的 token 才会打标签。</p>
+
 <p>代码、测试和基准测试是我借助 AI 编程助手（Claude）完成的，结果由我本人核对。</p>
 </main>
 </body>
