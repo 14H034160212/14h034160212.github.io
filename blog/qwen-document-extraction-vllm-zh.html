@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>用 vLLM 部署 Qwen3.5 做文档抽取：分类，而不是生成 | Qiming Bao</title>
+<meta name="description" content="让 Qwen3.5 把发票字段写成 JSON，比 ERNIE-Layout 慢 47 倍，精度也低得多。把它微调成单次前向的逐词分类器，再用 vLLM 的 pooling 模式部署：0.8B 模型每页 28 ms、精度与 ERNIE 持平，4B 模型 F1 高 2.2 个点。">
+<link rel="canonical" href="https://14h034160212.github.io/blog/qwen-document-extraction-vllm-zh.html">
+<link rel="alternate" hreflang="en" href="https://14h034160212.github.io/blog/qwen-document-extraction-vllm.html">
+<link rel="alternate" hreflang="zh-CN" href="https://14h034160212.github.io/blog/qwen-document-extraction-vllm-zh.html">
+<link rel="icon" type="image/jpeg" href="../qiming.jpg">
+<style>
+:root { --fg:#1f2328; --muted:#59636e; --bg:#ffffff; --code:#f6f8fa; --line:#d1d9e0; --link:#0969da; }
+@media (prefers-color-scheme: dark) { :root { --fg:#e6edf3; --muted:#9198a1; --bg:#0d1117; --code:#161b22; --line:#3d444d; --link:#4493f8; } }
+body { font-family: -apple-system, "Segoe UI", Arial, sans-serif; color:var(--fg); background:var(--bg); margin:0; line-height:1.65; }
+main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: 1.9rem; line-height:1.25; margin: 0.4em 0 0.2em; }
+h2 { margin-top: 2em; border-bottom:1px solid var(--line); padding-bottom:.2em; }
+a { color: var(--link); }
+.meta { color: var(--muted); font-size: .92rem; }
+table { border-collapse: collapse; margin: 1em 0; display:block; overflow-x:auto; }
+th, td { border: 1px solid var(--line); padding: 6px 12px; }
+th { background: var(--code); }
+pre { background: var(--code); padding: 12px; overflow-x: auto; border-radius: 6px; }
+code { background: var(--code); padding: 1px 4px; border-radius: 4px; font-size: .92em; }
+pre code { padding: 0; }
+</style>
+</head>
+<body>
+<main>
+<p class="meta"><a href="../index.html">Qiming Bao</a> · Blog · 2026 年 11 月 19 日 · <a href="qwen-document-extraction-vllm.html">English</a> / 中文</p>
+<h1>用 vLLM 部署 Qwen3.5 做文档抽取：分类，而不是生成</h1>
+<p>ERNIE-Layout、LayoutLMv3 这类版面模型又小又快：在 A100 上，ERNIE-Layout 给一页发票打标签只要约 7.5 ms。Qwen3.5 这类视觉语言模型读文档的能力强得多，但通常是生成式用法：你问字段，它写出 JSON。我想知道在关键信息抽取上，Qwen3.5 能离 ERNIE-Layout 的速度多近，需要怎么做。</p>
+<p>所有实验都用公开的 <a href="https://github.com/IndicoDataSolutions/RealKIE">RealKIE</a> FCC 发票数据（CC BY-NC 4.0）：11 个字段（其中 5 个是明细行字段），368 个测试页，用 seqeval 对每个词算实体 F1。速度是在一张与其他任务共用的 A100 上测的，请求由 vLLM 批处理。</p>
+
+<h2>瓶颈在生成</h2>
+<p>零样本、要求输出 JSON：</p>
+<table>
+<thead><tr><th>模型</th><th>每页 ms</th><th>每页输出 token</th><th>F1</th></tr></thead>
+<tbody>
+<tr><td>ERNIE-Layout（微调）</td><td><strong>7.5</strong></td><td>无</td><td>0.667</td></tr>
+<tr><td>Qwen3-VL-2B，JSON</td><td>183</td><td>792</td><td>0.23</td></tr>
+<tr><td>Qwen3.5-4B，JSON</td><td>351</td><td>737</td><td>0.37</td></tr>
+<tr><td>Qwen3.5-4B，只读不生成</td><td>47</td><td>1</td><td>—</td></tr>
+<tr><td>Qwen3.5-9B FP8，只读不生成</td><td>107</td><td>1</td><td>—</td></tr>
+</tbody>
+</table>
+<p>4B 模型读完一页（prefill）只要 47 ms，另外 300 ms 都花在写出约 740 个 JSON token 上。常见的解码加速在批大小 64 时效果比我预想的小：Qwen3.5 自带的 MTP 投机解码让 4B 只快了 7%，9B FP8 反而变慢，因为满批时 GPU 已经算满了。提示里给 OCR 文字时，n-gram 投机解码确实快了一倍，因为答案就是从这些文字里照抄的。更紧凑的输出格式能省 token，但精度下降。一页一页单独处理、不做批处理，每页要 2.3 秒。</p>
+
+<h2>改成分类</h2>
+<p>ERNIE-Layout 快，是因为它从不生成：一次前向就给每个词打上标签。Qwen3.5 也能这样做。每页输入是图片加上 OCR 词，在每个词的第一个子词上接一个线性分类头，预测 BIO 标签。我在语言模型上训练 LoRA 和分类头（视觉部分冻结），训练 2000 步，和 ERNIE-Layout 基线的预算一样。0.8B 模型训练 30 分钟、显存 3 GB；4B 模型 70 分钟、12 GB。</p>
+<p>有一个细节：Qwen3.5 是因果模型，一个词只能看到它前面的词（以及整张图片）。把词输入两遍、从第二遍读标签（echo），每个词就能看到整页的文字，代价是文字 token 翻倍。</p>
+
+<h2>结果</h2>
+<table>
+<thead><tr><th>模型</th><th>种子数</th><th>F1</th><th>对比 ERNIE-Layout</th><th>每页 ms（vLLM）</th></tr></thead>
+<tbody>
+<tr><td>Qwen3.5-4B，echo</td><td>3</td><td><strong>68.98 ± 0.85</strong></td><td>+2.24（p = 0.02）</td><td>148</td></tr>
+<tr><td>Qwen3.5-0.8B，无 echo</td><td>5</td><td>67.43 ± 0.27</td><td>+0.69（p = 0.19，持平）</td><td><strong>28</strong></td></tr>
+<tr><td>LayoutLMv3，整页（2048 token）</td><td>5</td><td>67.56</td><td></td><td></td></tr>
+<tr><td>ERNIE-Layout，整页（2048 token）</td><td>5</td><td>66.99</td><td></td><td></td></tr>
+<tr><td>ERNIE-Layout，512 token 窗口</td><td>5</td><td>66.74</td><td></td><td>7.5</td></tr>
+<tr><td>LayoutLMv3，512 token 窗口</td><td>5</td><td>66.39</td><td></td><td>12.1</td></tr>
+</tbody>
+</table>
+<p>4B 分类器显著优于 ERNIE-Layout 的两种配置，高约 2 个点。0.8B 分类器与它们持平，每页 28 ms，是 ERNIE-Layout 的 3.7 倍时间。和生成 JSON 相比，分类模式快 10 倍以上，F1 几乎翻倍。（0.8B 只跑一个种子时看起来比 ERNIE-Layout 好，跑满 5 个种子后是持平。）</p>
+
+<h2>剩下的时间花在哪里</h2>
+<p>在 vLLM 里对 0.8B 模型做 torch profile，GPU 时间大约 24% 在视觉编码器，76% 在语言模型。去掉图片，同一模型每页只要 10 ms，但 F1 掉到 0.57：图片很重要。几个更便宜的调节项都是拿精度换速度：</p>
+<ul>
+<li>去掉 echo：40.8 → 28 ms，F1 −0.6。值得。</li>
+<li>图片分辨率减半（约 390 个图片 token）：28 → 20 ms，F1 −1.2。</li>
+<li>分辨率降到四分之一（约 200 个图片 token，在 echo 下测）：40.8 → 30.4 ms，F1 −2.5。</li>
+<li>vLLM 的可选项“编码器 CUDA Graph”和“FlashInfer 编码器自动调优”：没有变化。每页约 3000 个 patch，编码器受算力限制，不受内核启动开销限制。</li>
+</ul>
+<p>剩下的差距由“参数量 × token 数”决定。ERNIE-Layout 约 0.3B 参数，读 512 token 的窗口；Qwen3.5-0.8B 每页读约 2000 个 token。要完全追平 ERNIE-Layout，需要更少的 token 或更便宜的计算（在支持 FP8 的 GPU 上用 FP8），而不是更快的推理引擎。</p>
+
+<h2>用 vLLM 部署</h2>
+<p>vLLM 已经能把任何支持的模型当作逐词分类器运行：<code>convert="classify"</code> 会加一个 <code>score</code> 头，pooling 模式返回每个 token 的概率。合并 LoRA 权重后，我把分类头存成模型权重旁边的 <code>score.weight</code> 和 <code>score.bias</code>。vLLM 的 F1 与训练代码一致（0.8B：0.6785 对 0.6790；4B：0.6979 对 0.6976）。</p>
+<pre><code>from vllm import LLM
+
+llm = LLM(model="path/to/merged-qwen3.5-classifier",
+          runner="pooling", convert="classify",
+          pooler_config={"task": "token_classify"},
+          limit_mm_per_prompt={"image": 1}, max_num_batched_tokens=16384)
+# prompt_token_ids：vision_start、一个 &lt;|image_pad|&gt;、vision_end，然后是各个词的子词
+out = llm.encode([{"prompt_token_ids": ids, "multi_modal_data": {"image": page}}],
+                 pooling_task="token_classify")
+probs = out[0].outputs.data          # (token 数, 标签数)</code></pre>
+<p>有两个坑花了我不少时间：</p>
+<ul>
+<li>要设置 pooler 任务。没有 <code>pooler_config={"task": "token_classify"}</code> 时，入口会选 <code>classify</code>（每个序列一个标签），<code>encode(..., pooling_task="token_classify")</code> 会被拒绝。</li>
+<li>只传一个图片占位符。如果 <code>prompt_token_ids</code> 里已经是 Hugging Face processor 展开后的图片占位符，vLLM 会再展开一次：一页 3663 个 token 变成了 4406 个，所有标签都错位，而且不报错（F1 0.02）。维护者认为正确的占位符是客户端的责任（见 <a href="https://github.com/vllm-project/vllm/issues/57740">#57740</a>）。</li>
+</ul>
+
+<h2>更便宜的显卡</h2>
+<p>0.8B 分类器推理只要约 3 GB 显存，3090、4090 都很轻松。老卡要多花些功夫。vLLM 当前的版本只提供 CUDA 13 的安装包，而且 2026 年 4 月起官方构建不再包含 Volta（V100）。为了在 CUDA 12 上跑当前的 <code>main</code>，我用 GCC 13、基于 <code>torch==2.14.1+cu126</code>（它仍包含 sm70）从源码编译，并去掉了只支持 CUDA 13 的可选依赖。之后每个模型启动都失败，因为一个 MiniMax-M3 的预热模块被无条件导入，而它需要其中一个依赖；这就是 <a href="https://github.com/vllm-project/vllm/issues/49920">#49920</a>，修复在 <a href="https://github.com/vllm-project/vllm/pull/49933">#49933</a>。在 fp16 下（V100 唯一支持的半精度），Qwen3-VL-2B 在这些页面上的速度和精度与 bf16 相同。</p>
+
+<h2>贡献给上游</h2>
+<ul>
+<li><a href="https://github.com/vllm-project/vllm/pull/68804">vllm-project/vllm#68804</a>：给 <code>vllm bench</code> 加了 DocVQA 数据集。现有基准数据集里没有文档页面，而文档请求的特点是图片 token 有几千个、答案很短。</li>
+<li>为 <a href="https://github.com/vllm-project/vllm/issues/49920">#49920</a> 补充了在当前 <code>main</code> 上的复现，这个 issue 原本快要因为长期无人回复被自动关闭。</li>
+</ul>
+
+<h2>局限</h2>
+<p>这只是一种文档类型的一个数据集，而且每页都是单独处理的。A100 是共用的，耗时只宜做相对比较。精度对比用的是跨种子的 Welch t 检验；4B 模型只有 3 个种子。</p>
+
+<p>代码编写、实验运行和本文初稿借助了 AI 编程助手（Claude），结果由我本人核对。</p>
+</main>
+</body>
+</html>

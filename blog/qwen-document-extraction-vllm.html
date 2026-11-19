@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Qwen3.5 for document extraction on vLLM: classify, don't generate | Qiming Bao</title>
+<meta name="description" content="Asking Qwen3.5 to write the fields of an invoice as JSON is 47 times slower than ERNIE-Layout and much less accurate. Fine-tuning it as a one-pass token classifier and serving it with vLLM's pooling runner gives ERNIE-level accuracy at 28 ms per page with the 0.8B model, and +2.2 F1 with the 4B model.">
+<link rel="canonical" href="https://14h034160212.github.io/blog/qwen-document-extraction-vllm.html">
+<link rel="alternate" hreflang="en" href="https://14h034160212.github.io/blog/qwen-document-extraction-vllm.html">
+<link rel="alternate" hreflang="zh-CN" href="https://14h034160212.github.io/blog/qwen-document-extraction-vllm-zh.html">
+<link rel="icon" type="image/jpeg" href="../qiming.jpg">
+<style>
+:root { --fg:#1f2328; --muted:#59636e; --bg:#ffffff; --code:#f6f8fa; --line:#d1d9e0; --link:#0969da; }
+@media (prefers-color-scheme: dark) { :root { --fg:#e6edf3; --muted:#9198a1; --bg:#0d1117; --code:#161b22; --line:#3d444d; --link:#4493f8; } }
+body { font-family: -apple-system, "Segoe UI", Arial, sans-serif; color:var(--fg); background:var(--bg); margin:0; line-height:1.65; }
+main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: 1.9rem; line-height:1.25; margin: 0.4em 0 0.2em; }
+h2 { margin-top: 2em; border-bottom:1px solid var(--line); padding-bottom:.2em; }
+a { color: var(--link); }
+.meta { color: var(--muted); font-size: .92rem; }
+table { border-collapse: collapse; margin: 1em 0; display:block; overflow-x:auto; }
+th, td { border: 1px solid var(--line); padding: 6px 12px; }
+th { background: var(--code); }
+pre { background: var(--code); padding: 12px; overflow-x: auto; border-radius: 6px; }
+code { background: var(--code); padding: 1px 4px; border-radius: 4px; font-size: .92em; }
+pre code { padding: 0; }
+</style>
+</head>
+<body>
+<main>
+<p class="meta"><a href="../index.html">Qiming Bao</a> · Blog · 19 November 2026 · English / <a href="qwen-document-extraction-vllm-zh.html">中文</a></p>
+<h1>Qwen3.5 for document extraction on vLLM: classify, don't generate</h1>
+<p>Layout models such as ERNIE-Layout and LayoutLMv3 are small and fast. On an A100, ERNIE-Layout labels an invoice page in about 7.5 ms. Vision-language models such as Qwen3.5 read documents much better, but they are typically used generatively: you ask for the fields and they write JSON. I wanted to know how close Qwen3.5 can get to ERNIE-Layout's speed for key-information extraction, and what it takes.</p>
+<p>All experiments use the public <a href="https://github.com/IndicoDataSolutions/RealKIE">RealKIE</a> FCC invoices (CC BY-NC 4.0): 11 fields including 5 line-item fields, 368 test pages, scored with seqeval entity F1 over every word. Speeds are on one A100 shared with other jobs, with requests batched by vLLM.</p>
+
+<h2>Generation is the bottleneck</h2>
+<p>Zero-shot, asking for JSON:</p>
+<table>
+<thead><tr><th>model</th><th>ms / page</th><th>output tokens / page</th><th>F1</th></tr></thead>
+<tbody>
+<tr><td>ERNIE-Layout (fine-tuned)</td><td><strong>7.5</strong></td><td>none</td><td>0.667</td></tr>
+<tr><td>Qwen3-VL-2B, JSON</td><td>183</td><td>792</td><td>0.23</td></tr>
+<tr><td>Qwen3.5-4B, JSON</td><td>351</td><td>737</td><td>0.37</td></tr>
+<tr><td>Qwen3.5-4B, prefill only (no output)</td><td>47</td><td>1</td><td>n/a</td></tr>
+<tr><td>Qwen3.5-9B FP8, prefill only</td><td>107</td><td>1</td><td>n/a</td></tr>
+</tbody>
+</table>
+<p>Reading the page (prefill) takes 47 ms for the 4B model. Writing about 740 tokens of JSON takes the other 300 ms. The usual decode tricks helped less than I expected at batch 64: Qwen3.5's own MTP speculative decoding made the 4B model 7% faster and the 9B FP8 model slower, because a full batch is already compute-bound. N-gram speculation did halve the time when the OCR text was in the prompt, since answers copy that text. A more compact output format saved tokens but lost accuracy. Processing one page at a time instead of a batch took 2.3 s per page.</p>
+
+<h2>Classify instead</h2>
+<p>ERNIE-Layout is fast because it never generates: one forward pass tags every word. Qwen3.5 can do the same. Each page goes in as the image followed by its OCR words, and a linear head on the first sub-token of every word predicts the BIO tag. I trained LoRA adapters on the language model and the head (vision tower frozen), 2,000 steps, the same budget as the ERNIE-Layout baseline. The 0.8B model trains in 30 minutes on 3 GB of GPU memory, the 4B model in 70 minutes on 12 GB.</p>
+<p>One wrinkle: Qwen3.5 is causal, so a word only sees the words before it (and the whole image). Feeding the words twice and reading the labels from the second copy ("echo") lets every word see the whole page's text, at the cost of twice the text tokens.</p>
+
+<h2>Results</h2>
+<table>
+<thead><tr><th>model</th><th>seeds</th><th>F1</th><th>vs ERNIE-Layout</th><th>ms / page (vLLM)</th></tr></thead>
+<tbody>
+<tr><td>Qwen3.5-4B, echo</td><td>3</td><td><strong>68.98 ± 0.85</strong></td><td>+2.24 (p = 0.02)</td><td>148</td></tr>
+<tr><td>Qwen3.5-0.8B, no echo</td><td>5</td><td>67.43 ± 0.27</td><td>+0.69 (p = 0.19, a tie)</td><td><strong>28</strong></td></tr>
+<tr><td>LayoutLMv3, whole page (2048 tokens)</td><td>5</td><td>67.56</td><td></td><td></td></tr>
+<tr><td>ERNIE-Layout, whole page (2048 tokens)</td><td>5</td><td>66.99</td><td></td><td></td></tr>
+<tr><td>ERNIE-Layout, 512-token windows</td><td>5</td><td>66.74</td><td></td><td>7.5</td></tr>
+<tr><td>LayoutLMv3, 512-token windows</td><td>5</td><td>66.39</td><td></td><td>12.1</td></tr>
+</tbody>
+</table>
+<p>The 4B classifier is significantly better than both ERNIE-Layout settings, by about 2 points. The 0.8B classifier ties them at 28 ms per page, 3.7 times ERNIE-Layout's time. Compared with generating JSON, classification is more than 10 times faster and nearly doubles F1. (A single seed of the 0.8B model first looked better than ERNIE-Layout; five seeds say it is a tie.)</p>
+
+<h2>Where the remaining time goes</h2>
+<p>A torch profile of the 0.8B model in vLLM splits GPU time about 24% vision encoder and 76% language model. Without the image, the same model takes 10 ms per page, but F1 drops to 0.57: the image matters. The cheaper knobs trade accuracy for speed:</p>
+<ul>
+<li>Dropping echo: 40.8 to 28 ms, -0.6 F1. Worth it.</li>
+<li>Halving image resolution (about 390 image tokens): 28 to 20 ms, -1.2 F1.</li>
+<li>Quartering it (about 200 image tokens, measured with echo): 40.8 to 30.4 ms, -2.5 F1.</li>
+<li>vLLM's opt-in encoder CUDA graphs and FlashInfer encoder autotuning: no change. At about 3,000 patches per page the encoder is compute-bound, not launch-bound.</li>
+</ul>
+<p>What is left is set by parameters times tokens. ERNIE-Layout has about 0.3B parameters and reads 512-token windows; Qwen3.5-0.8B reads about 2,000 tokens per page. Matching ERNIE-Layout exactly would need fewer tokens or cheaper arithmetic (FP8 on GPUs that support it), not a faster serving engine.</p>
+
+<h2>Serving it with vLLM</h2>
+<p>vLLM can already run any supported model as a token classifier: <code>convert="classify"</code> adds a <code>score</code> head and the pooling runner returns per-token probabilities. After merging the LoRA weights, I saved the head as <code>score.weight</code> and <code>score.bias</code> next to the model weights. vLLM's F1 matched the training code (0.6785 vs 0.6790 for 0.8B, 0.6979 vs 0.6976 for 4B).</p>
+<pre><code>from vllm import LLM
+
+llm = LLM(model="path/to/merged-qwen3.5-classifier",
+          runner="pooling", convert="classify",
+          pooler_config={"task": "token_classify"},
+          limit_mm_per_prompt={"image": 1}, max_num_batched_tokens=16384)
+# prompt_token_ids: vision_start, ONE &lt;|image_pad|&gt;, vision_end, then the word pieces
+out = llm.encode([{"prompt_token_ids": ids, "multi_modal_data": {"image": page}}],
+                 pooling_task="token_classify")
+probs = out[0].outputs.data          # (num_tokens, num_labels)</code></pre>
+<p>Two traps cost me time:</p>
+<ul>
+<li>Set the pooler task. Without <code>pooler_config={"task": "token_classify"}</code>, the entrypoint picks <code>classify</code> (one label per sequence) and <code>encode(..., pooling_task="token_classify")</code> is rejected.</li>
+<li>Pass a single image placeholder. If <code>prompt_token_ids</code> already contain the expanded image pads that the Hugging Face processor produces, vLLM expands them again: a 3,663-token page became 4,406 tokens and every label shifted, with no error (F1 0.02). Maintainers consider correct placeholders the client's job (see <a href="https://github.com/vllm-project/vllm/issues/57740">#57740</a>).</li>
+</ul>
+
+<h2>Cheaper GPUs</h2>
+<p>The 0.8B classifier needs about 3 GB at inference, so it fits a 3090 or 4090 easily. Older cards take more work. Current vLLM releases ship CUDA 13 wheels only, and vLLM dropped Volta (V100) from its official builds in April 2026. To run current <code>main</code> on CUDA 12, I built it from source against <code>torch==2.14.1+cu126</code> (which still includes sm70) with GCC 13, and removed the CUDA-13-only optional dependencies. The build then failed at startup for every model because a MiniMax-M3 warmup module is imported unconditionally and needs one of them; that is <a href="https://github.com/vllm-project/vllm/issues/49920">#49920</a>, with a fix in <a href="https://github.com/vllm-project/vllm/pull/49933">#49933</a>. In fp16 (the only half precision a V100 has), Qwen3-VL-2B gave the same speed and accuracy as bf16 on these pages.</p>
+
+<h2>Contributed upstream</h2>
+<ul>
+<li><a href="https://github.com/vllm-project/vllm/pull/68804">vllm-project/vllm#68804</a> adds a DocVQA dataset to <code>vllm bench</code>. No existing benchmark dataset had document pages, whose requests carry thousands of image tokens and short answers.</li>
+<li>A reproduction on current <code>main</code> for <a href="https://github.com/vllm-project/vllm/issues/49920">#49920</a>, which was about to be closed as stale.</li>
+</ul>
+
+<h2>Caveats</h2>
+<p>This is one dataset of one document type, and every page is processed on its own. The A100 was shared, so treat times as relative. Accuracy comparisons use Welch's t-test over seeds; the 4B model has 3 seeds.</p>
+
+<p>I used an AI coding assistant (Claude) to help write the code, run the experiments and draft this post, and I checked the results myself.</p>
+</main>
+</body>
+</html>
