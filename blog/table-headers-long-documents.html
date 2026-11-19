@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Do layout models need the table header? | Qiming Bao</title>
+<meta name="description" content="When a long invoice is split into 512-token windows, later windows cannot see the line-item table's header. I taught LayoutLMv3 and ERNIE-Layout to find the header and fed it to every window. The header was found reliably, and it did not help: on 436 headerless chunks the models already score about 86 without it.">
+<link rel="canonical" href="https://14h034160212.github.io/blog/table-headers-long-documents.html">
+<link rel="alternate" hreflang="en" href="https://14h034160212.github.io/blog/table-headers-long-documents.html">
+<link rel="alternate" hreflang="zh-CN" href="https://14h034160212.github.io/blog/table-headers-long-documents-zh.html">
+<link rel="icon" type="image/jpeg" href="../qiming.jpg">
+<style>
+:root { --fg:#1f2328; --muted:#59636e; --bg:#ffffff; --code:#f6f8fa; --line:#d1d9e0; --link:#0969da; }
+@media (prefers-color-scheme: dark) { :root { --fg:#e6edf3; --muted:#9198a1; --bg:#0d1117; --code:#161b22; --line:#3d444d; --link:#4493f8; } }
+body { font-family: -apple-system, "Segoe UI", Arial, sans-serif; color:var(--fg); background:var(--bg); margin:0; line-height:1.65; }
+main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: 1.9rem; line-height:1.25; margin: 0.4em 0 0.2em; }
+h2 { margin-top: 2em; border-bottom:1px solid var(--line); padding-bottom:.2em; }
+a { color: var(--link); }
+.meta { color: var(--muted); font-size: .92rem; }
+table { border-collapse: collapse; margin: 1em 0; display:block; overflow-x:auto; }
+th, td { border: 1px solid var(--line); padding: 6px 12px; }
+th { background: var(--code); }
+pre { background: var(--code); padding: 12px; overflow-x: auto; border-radius: 6px; }
+code { background: var(--code); padding: 1px 4px; border-radius: 4px; font-size: .92em; }
+pre code { padding: 0; }
+</style>
+</head>
+<body>
+<main>
+<p class="meta"><a href="../index.html">Qiming Bao</a> · Blog · 19 November 2026 · English / <a href="table-headers-long-documents-zh.html">中文</a></p>
+<h1>Do layout models need the table header? A negative result</h1>
+<p>In <a href="long-documents-layoutlmv3-16gb.html">Long documents with LayoutLMv3 on a 16 GB GPU</a>, one of the baselines splits each page into 512-token windows. A window that starts in the middle of a line-item table cannot see the table's header. Neither can a continuation page where the header is not printed again. It seems obvious that this should hurt: how does the model know a column is the rate and not the number of spots, if it never sees the word "Rate"?</p>
+<p>I tested it on RealKIE FCC invoices (TV ad invoices with long line-item tables) with LayoutLMv3 and ERNIE-Layout. The short answer: <strong>the models learned to find the header reliably, and giving them the header did not help.</strong> Without any header, they already get about 86 line-item F1 on headerless chunks.</p>
+
+<h2>Finding the header</h2>
+<p>The first question is how the model knows which rows are the header. I tried three things on 30 hand-checked test pages:</p>
+<ul>
+<li><strong>Table Transformer</strong> (<code>microsoft/table-structure-recognition-v1.1-all</code>), the standard off-the-shelf model: correct on 5 of 30 pages. These are low-resolution scans with borderless, multi-line headers, which is far from its training data.</li>
+<li><strong>Rules</strong> (the row above the first line item, or a word list mined from training data): 10 to 12 of 30.</li>
+<li><strong>Learned:</strong> label the header rows on each training document's first line-item page, copy the labels to repeated headers on later pages, and train a <code>B-TABLE_HEADER</code> tag together with the fields. This finds header words with precision 0.88 to 0.92 and recall 0.97, for both models.</li>
+</ul>
+<p>The labels (202 training and 67 test documents) were made from page images with an AI model and checked against the 30 hand-checked pages, where all 36 header rows matched.</p>
+
+<h2>Feeding it to every window</h2>
+<p>The <strong>prefix</strong> method prepends the most recent header words to every window. They keep their x coordinates, so they still line up with their columns, and are moved to the top of the page. That header comes from earlier in the same page or from an earlier page. At test time it comes from the model's own predictions, with pages processed in order. Prefix words are not scored. An <strong>oracle</strong> variant uses the gold header instead.</p>
+
+<h2>Measuring it properly</h2>
+<p>The test set has only 23 real continuation pages without a header. On them, the first results looked good: the prefix gave LayoutLMv3 +2.1 points, winning on all 5 seeds. With ERNIE-Layout the picture was different: the tag alone did nothing and the prefix gave +2.0. But 23 pages are too few. The same ERNIE-Layout setting scored 82.7 in one run and 80.3 in a rerun.</p>
+<p>So I built a bigger test: <strong>436 synthetic headerless chunks</strong>. Each test page with a header is cut just below the header, or 4 or 8 rows further down. The rest of the page is moved to the top of a blank page, image and boxes alike, so it looks like a continuation page. Line-item F1 on these chunks, 5 seeds:</p>
+<table>
+<thead><tr><th>model</th><th>none</th><th>tag</th><th>prefix</th><th>oracle</th></tr></thead>
+<tbody>
+<tr><td>LayoutLMv3</td><td><strong>86.36</strong></td><td>85.59</td><td>86.04</td><td>86.03</td></tr>
+<tr><td>ERNIE-Layout</td><td>86.72</td><td>86.55</td><td><strong>87.00</strong></td><td>87.02</td></tr>
+</tbody>
+</table>
+<p>Prefix against none is -0.3 for LayoutLMv3 (paired t-test p = 0.66) and +0.3 for ERNIE-Layout (p = 0.25). The tag alone is slightly worse for LayoutLMv3 (-0.8, all 5 seeds, p = 0.02). Overall F1 on the full test set does not move either (66 to 67.6 for every setting). The 2-point gains on the 23 pages were noise.</p>
+
+<h2>Why the header does not matter here</h2>
+<p>Two observations explain it:</p>
+<ul>
+<li><strong>The score does not fall with depth.</strong> Cutting right under the header, 4 rows down or 8 rows down gives 86.2, 86.4 and 86.5 for LayoutLMv3 without a prefix. If the model needed the header, chunks that start further from it would not do just as well.</li>
+<li><strong>The rows describe themselves.</strong> In these invoices a start date, an air time like "5-6a", a spot count and a rate like "$200.00" each have their own format and column position. The model can tell them apart without reading the column names.</li>
+</ul>
+<p>The prefix with predicted headers also scored the same as the oracle, so header detection was not the limit.</p>
+
+<h2>Takeaways</h2>
+<ul>
+<li>Check that a problem exists before building a fix. Here, a plain baseline on headerless chunks would have answered the question in one run.</li>
+<li>A small evaluation slice can produce a consistent-looking gain. All 5 seeds winning on 23 pages still turned out to be noise. Making more test cases from labels you already have is cheap.</li>
+<li>The header probably does matter when rows are ambiguous without it, for example several numeric columns such as debit and credit in bank statements. Testing that needs a different dataset.</li>
+</ul>
+<p>Code, labels and results are in <a href="https://github.com/14H034160212/layoutlmv3-pretraining">layoutlmv3-pretraining</a>: <code>scripts/table_header_prefix.py</code>, <code>scripts/build_headerless_cuts.py</code> and <code>data/table_header/</code>. W&amp;B runs for the 436-chunk evaluation: LayoutLMv3 <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/v1dfrg0m">none</a>, <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/dqwsh9hp">tag</a>, <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/7r4v161j">prefix</a>; ERNIE-Layout <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/5spucuqb">none</a>, <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/v1wk742c">tag</a>, <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/k1tsina5">prefix</a>.</p>
+
+<p>I used an AI coding assistant (Claude) to help write the code, label the header rows and run the experiments, and I checked the results myself.</p>
+</main>
+</body>
+</html>

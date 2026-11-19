@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>版面模型需要看到表头吗？ | Qiming Bao</title>
+<meta name="description" content="长发票切成 512 token 的窗口后，后面的窗口看不到明细表的表头。我让 LayoutLMv3 和 ERNIE-Layout 学会识别表头，并把表头补给每个窗口。表头识别得很准，但没有带来提升：在 436 个无表头片段上，模型不看表头也能拿到约 86 分。">
+<link rel="canonical" href="https://14h034160212.github.io/blog/table-headers-long-documents-zh.html">
+<link rel="alternate" hreflang="en" href="https://14h034160212.github.io/blog/table-headers-long-documents.html">
+<link rel="alternate" hreflang="zh-CN" href="https://14h034160212.github.io/blog/table-headers-long-documents-zh.html">
+<link rel="icon" type="image/jpeg" href="../qiming.jpg">
+<style>
+:root { --fg:#1f2328; --muted:#59636e; --bg:#ffffff; --code:#f6f8fa; --line:#d1d9e0; --link:#0969da; }
+@media (prefers-color-scheme: dark) { :root { --fg:#e6edf3; --muted:#9198a1; --bg:#0d1117; --code:#161b22; --line:#3d444d; --link:#4493f8; } }
+body { font-family: -apple-system, "Segoe UI", Arial, sans-serif; color:var(--fg); background:var(--bg); margin:0; line-height:1.65; }
+main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: 1.9rem; line-height:1.25; margin: 0.4em 0 0.2em; }
+h2 { margin-top: 2em; border-bottom:1px solid var(--line); padding-bottom:.2em; }
+a { color: var(--link); }
+.meta { color: var(--muted); font-size: .92rem; }
+table { border-collapse: collapse; margin: 1em 0; display:block; overflow-x:auto; }
+th, td { border: 1px solid var(--line); padding: 6px 12px; }
+th { background: var(--code); }
+pre { background: var(--code); padding: 12px; overflow-x: auto; border-radius: 6px; }
+code { background: var(--code); padding: 1px 4px; border-radius: 4px; font-size: .92em; }
+pre code { padding: 0; }
+</style>
+</head>
+<body>
+<main>
+<p class="meta"><a href="../index.html">Qiming Bao</a> · Blog · 2026 年 11 月 19 日 · <a href="table-headers-long-documents.html">English</a> / 中文</p>
+<h1>版面模型需要看到表头吗？一个负面结果</h1>
+<p>在<a href="long-documents-layoutlmv3-16gb-zh.html">《16 GB 显卡上用 LayoutLMv3 处理长文档》</a>里，有一个基线是把每页切成 512 token 的窗口。从明细表中间开始的窗口看不到表头，没有重复打印表头的续页也看不到。直觉上这应该会影响效果：如果模型从没看到“Rate”这个词，它怎么知道某一列是单价，而不是播出次数？</p>
+<p>我在 RealKIE FCC 发票（带长明细表的电视广告发票）上，用 LayoutLMv3 和 ERNIE-Layout 做了验证。结论是：<strong>模型能可靠地学会找表头，但把表头补给模型并没有带来提升。</strong>不给任何表头，模型在无表头片段上的明细行 F1 已经有约 86。</p>
+
+<h2>怎么找到表头</h2>
+<p>第一个问题是模型怎么知道哪几行是表头。我在 30 个人工核对过的测试页上试了三种方法：</p>
+<ul>
+<li><strong>Table Transformer</strong>（<code>microsoft/table-structure-recognition-v1.1-all</code>），常用的现成模型：30 页里只对了 5 页。这些是低分辨率扫描件，表头没有边框而且跨多行，和它的训练数据差别很大。</li>
+<li><strong>规则</strong>（取第一行明细上面的那一行，或用从训练集统计出的词表）：对了 10～12 页。</li>
+<li><strong>学出来</strong>：在每个训练文档的第一张明细页上标出表头行，再把标签复制到后面页上重复出现的表头，然后和其他字段一起训练一个 <code>B-TABLE_HEADER</code> 标签。两个模型找表头词的精确率都是 0.88～0.92，召回率 0.97。</li>
+</ul>
+<p>标签（202 个训练文档、67 个测试文档）是用 AI 模型看页面图片标注的，再和那 30 个人工核对页比对，36 个表头行全部一致。</p>
+
+<h2>把表头补给每个窗口</h2>
+<p><strong>前缀（prefix）</strong>方法把最近一次出现的表头词加在每个窗口前面。表头词保留原来的 x 坐标，所以仍然和各自的列对齐，y 坐标挪到页顶。表头来自同一页前面的部分，或者前面的页。测试时用的是模型自己预测的表头，各页按顺序处理。前缀词不参与评分。<strong>oracle</strong> 版本改用真实表头。</p>
+
+<h2>好好测一下</h2>
+<p>测试集里真正没有表头的续页只有 23 页。在这 23 页上，一开始的结果看起来不错：前缀让 LayoutLMv3 提升 2.1 分，5 个种子全赢。ERNIE-Layout 的情况却不一样：只加标签没用，加前缀提升 2.0 分。但 23 页太少了，同一个 ERNIE-Layout 配置，一次跑出 82.7，重跑一次是 80.3。</p>
+<p>所以我造了一个更大的测试集：<strong>436 个合成的无表头片段</strong>。把每个带表头的测试页从表头正下方切开，或者再往下跳过 4 行、8 行切开，把剩下的部分（图片和坐标一起）挪到一张空白页的顶部，看起来就像一张续页。这些片段上的明细行 F1，5 个种子平均：</p>
+<table>
+<thead><tr><th>模型</th><th>none</th><th>tag</th><th>prefix</th><th>oracle</th></tr></thead>
+<tbody>
+<tr><td>LayoutLMv3</td><td><strong>86.36</strong></td><td>85.59</td><td>86.04</td><td>86.03</td></tr>
+<tr><td>ERNIE-Layout</td><td>86.72</td><td>86.55</td><td><strong>87.00</strong></td><td>87.02</td></tr>
+</tbody>
+</table>
+<p>前缀对比不加：LayoutLMv3 为 −0.3（配对 t 检验 p = 0.66），ERNIE-Layout 为 +0.3（p = 0.25）。只加标签对 LayoutLMv3 反而略差（−0.8，5 个种子全输，p = 0.02）。整个测试集上的总体 F1 也没有变化，所有设置都在 66～67.6 之间。23 页上那 2 分的提升是噪声。</p>
+
+<h2>为什么这里不需要表头</h2>
+<p>两个现象可以解释：</p>
+<ul>
+<li><strong>切得越深，分数并没有更低。</strong>紧贴表头切、往下 4 行切、往下 8 行切，LayoutLMv3 不加前缀分别是 86.2、86.4、86.5。如果模型依赖表头，离表头越远的片段不可能做得一样好。</li>
+<li><strong>每一行“自带说明”。</strong>在这些发票里，开始日期、“5-6a”这样的播出时段、播出次数、“$200.00”这样的单价，各有自己的格式和列位置。模型不用读列名也能分清。</li>
+</ul>
+<p>另外，用预测表头的前缀和 oracle 分数一样，说明表头识别也不是瓶颈。</p>
+
+<h2>经验</h2>
+<ul>
+<li>先确认问题存在，再动手解决。这里只要在无表头片段上跑一次基线，就能回答这个问题。</li>
+<li>小评测集也能产生“看起来很稳定”的提升。23 页上 5 个种子全赢，最后还是噪声。用已有标签自动造更多测试样本，成本很低。</li>
+<li>如果没有表头时行的含义有歧义，表头应该还是有用的，比如银行流水里借方、贷方这样的多个数字列。验证这一点需要换数据集。</li>
+</ul>
+<p>代码、标签和结果都在 <a href="https://github.com/14H034160212/layoutlmv3-pretraining">layoutlmv3-pretraining</a>：<code>scripts/table_header_prefix.py</code>、<code>scripts/build_headerless_cuts.py</code> 和 <code>data/table_header/</code>。436 片段评测的 W&amp;B 记录：LayoutLMv3 <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/v1dfrg0m">none</a>、<a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/dqwsh9hp">tag</a>、<a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/7r4v161j">prefix</a>；ERNIE-Layout <a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/5spucuqb">none</a>、<a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/v1wk742c">tag</a>、<a href="https://forge.coreweave.com/wandb/qbao775/layoutlmv3-pretraining/runs/k1tsina5">prefix</a>。</p>
+
+<p>代码编写、表头标注和实验运行借助了 AI 编程助手（Claude），结果由我本人核对。</p>
+</main>
+</body>
+</html>
