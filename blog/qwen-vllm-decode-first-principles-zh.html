@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>从字节出发，让 Qwen3.5 在 vLLM 上解码更快 | Qiming Bao</title>
+<meta name="description" content="解码每一步都要把全部权重读一遍。在 A100 上顺着字节往下查，找到了 Marlin 的小矩阵 bug、更快的 weight-only 内核、量化的草稿 head、只对 MLP 做 4 bit，以及更短的 JSON：Qwen3.5-9B 延迟降低 28%，吞吐提高 36%，精度不变。">
+<link rel="canonical" href="https://14h034160212.github.io/blog/qwen-vllm-decode-first-principles-zh.html">
+<link rel="alternate" hreflang="en" href="https://14h034160212.github.io/blog/qwen-vllm-decode-first-principles.html">
+<link rel="alternate" hreflang="zh-CN" href="https://14h034160212.github.io/blog/qwen-vllm-decode-first-principles-zh.html">
+<link rel="icon" type="image/jpeg" href="../qiming.jpg">
+:root { --fg:#1f2328; --muted:#59636e; --bg:#ffffff; --code:#f6f8fa; --line:#d1d9e0; --link:#0969da; }
+@media (prefers-color-scheme: dark) { :root { --fg:#e6edf3; --muted:#9198a1; --bg:#0d1117; --code:#161b22; --line:#3d444d; --link:#4493f8; } }
+body { font-family: -apple-system, "Segoe UI", Arial, sans-serif; color:var(--fg); background:var(--bg); margin:0; line-height:1.65; }
+main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: 1.9rem; line-height:1.25; margin: 0.4em 0 0.2em; }
+h2 { margin-top: 2em; border-bottom:1px solid var(--line); padding-bottom:.2em; }
+a { color: var(--link); }
+.meta { color: var(--muted); font-size: .92rem; }
+table { border-collapse: collapse; margin: 1em 0; display:block; overflow-x:auto; }
+th, td { border: 1px solid var(--line); padding: 6px 12px; }
+th { background: var(--code); }
+pre { background: var(--code); padding: 12px; overflow-x: auto; border-radius: 6px; }
+code { background: var(--code); padding: 1px 4px; border-radius: 4px; font-size: .92em; }
+pre code { padding: 0; }
+</style>
+</head>
+<body>
+</head>
+<body>
+<main>
+<p class="meta"><a href="../index.html">Qiming Bao</a> · 博客 · 2026 年 11 月 23 日 · <a href="qwen-vllm-decode-first-principles.html">English</a> / 中文</p>
+<h1>从字节出发，让 Qwen3.5 在 vLLM 上解码更快</h1>
+<p>视觉语言模型从文档里抽取字段时，大部分时间花在一个 token 一个 token 地写答案上。每个解码步都要把模型的全部权重读一遍，所以在 GPU 上，每步时间约等于<em>权重字节数 ÷ 显存带宽</em>。我以此为起点，从配置一路往下查到内核：每步读了什么、哪些内核读得慢、怎样在不掉精度的前提下少读字节、少生成 token。</p>
+<p>实验设置：Qwen3.5-9B，用 vLLM 的在线 FP8 量化和它自带的 MTP 投机解码，跑在一张和其他任务共享的 A100 80GB 上。数据是公开的 <a href="https://huggingface.co/datasets/nanonets/nn-auto-bench-ds">nanonets/nn-auto-bench-ds</a> 全部 1000 份文档（发票、收据、银行流水、护照；MIT 许可）：输入图片，按要求的字段输出 JSON，用字段级 F1 评分。延迟取 50 个单请求的 p50；吞吐是 16 个并发请求跑完全部 1000 份。所有精度比较都是按文档做的配对 bootstrap。</p>
+
+<h2>时间花在哪</h2>
+<p>请求时间的中位数是 935 ms，其中预填充（含视觉编码器）约 113 ms，解码 824 ms（88%）。CPU 上的图像预处理单独计时另需 42 ms。不开投机解码时，一个解码步 8.4 ms，GPU 有 99% 的时间在忙，所以问题不在启动开销。每步要读 8.95 GB 权重（6.9 GB 的 FP8 线性层加 2 GB 的 BF16 lm_head）。A100 实测拷贝带宽 1.75 TB/s，对应的下限是 5.1 ms，模型只跑到了它的 62%。</p>
+<p>nsys trace 显示 8.4 ms 里有 6.1 ms 是 FP8 GEMM。A100 没有 FP8 张量核，所以 vLLM 用 Marlin 内核以"weight-only"方式运行 FP8 权重，边算边转成 BF16。在 CUDA graph 里逐个形状计时，这些 GEMM 平均只有 1.14 TB/s，而同样形状的 BF16 cuBLAS 能到 1.5–1.7 TB/s。</p>
+
+<h2>Marlin 的一个 bug：小层比大层还慢</h2>
+<p>有一个形状很突出。Qwen3.5 的 24 个 Gated DeltaNet 层各有一个 <code>in_proj_ba</code> 投影，从 4096 维只输出 64 维。Marlin 算它要 37 µs（int4 权重要 45 µs），而 BF16 只要 6 µs，4096 × 4096 的 Marlin GEMM 也才 14 µs。N 越小反而越慢。</p>
+<p>原因在启动方式。Marlin 总是每个 SM 启动一个块（A100 上是 108 个）。只有一个输出 tile 时，每个块大约只分到一个 K tile，然后这些块要通过一把锁一个接一个地累加部分和，这条链有多长，耗时就有多长。<a href="https://github.com/vllm-project/vllm/pull/69231">vllm#69231</a> 在输出 tile 很少时限制 K 方向的切分份数，更大的问题仍然用满整个 grid：</p>
+<table>
+<thead><tr><th>权重，K × N</th><th>修复前</th><th>修复后</th></tr></thead>
+<tbody>
+<tr><td>FP8，4096 × 64</td><td>37.2 µs</td><td>9.3 µs</td></tr>
+<tr><td>int4 g128，4096 × 64</td><td>45.1 µs</td><td>10.7 µs</td></tr>
+<tr><td>int4 g128，4096 × 256</td><td>20.6 µs</td><td>11.3 µs</td></tr>
+<tr><td>更大的形状（4096 × 4096 到 4096 × 24576）</td><td colspan="2">不变</td></tr>
+</tbody>
+</table>
+<p>端到端 p50 降低 3.8–4.7%，F1 不变。另一位贡献者在 GB10（48 个 SM）上独立复现了提速，并指出那里有一个形状看起来变慢了。我打印了 Marlin 的 tile 选择，发现那个形状有 4 个输出 tile，在 48 个 SM 上不会触发这个限制，差异只是噪声。</p>
+
+<h2>更好的 weight-only 内核：Humming</h2>
+<p>vLLM 维护者计划用 Humming 取代 Marlin（<a href="https://github.com/vllm-project/vllm/issues/65560">#65560</a>）。在 A100 上，它在这个模型的每一种 GEMM 形状上都更快（全部 FP8 GEMM 每步从 6.12 ms 降到 5.19 ms；64 维那一层从 38 µs 降到 10 µs），整个解码步从 8.41 ms 降到 7.49 ms。在九种设置（输入/输出长度 × 并发数，每个后端两个服务器）的 serving 对比中，其中八种的输出吞吐是 Marlin 的 1.09–1.20 倍（并发 1、只输出 1 个 token 的那一种是 0.98，在重复测量的波动范围内），GSM8K 准确率不变（0.860 对 0.862）。compressed-tensors checkpoint 的 weight-only FP8 本来就优先选 Humming，但在线 <code>--quantization fp8</code> 仍然落到 Marlin。<a href="https://github.com/vllm-project/vllm/pull/69242">vllm#69242</a> 让它也从 weight-only 内核表里选，并修复了一个标志位：它会让反量化函数把 Humming 重新打包过的权重当成原始权重读（对 <code>[256, 512]</code> 的权重返回了 <code>[1024, 32]</code>）。</p>
+
+<h2>草稿模型的 lm_head</h2>
+<p>开 MTP 时，草稿模型每生成一个草稿 token 都要复用目标模型 2 GB 的 BF16 lm_head，4 个草稿 token 就是每步读 4 遍。vLLM 可以给草稿模型一份量化副本（<code>draft_lm_head_quantization</code>），目标模型仍然用自己的 head 验证，所以输出不变。NVFP4 副本在 3 个草稿 token 时把 p50 降低 15.6%，4 个时降低 18.8%。FP8 副本在没有 FP8 GEMM 的 GPU 上无法启动；<a href="https://github.com/vllm-project/vllm/pull/69177">vllm#69177</a> 让它在这些 GPU 上走 weight-only，并修复了一个缺失的布局标志，它曾导致 Humming 在这里崩溃。</p>
+
+<h2>少读字节，前提是精度不掉</h2>
+<p>4 bit 权重要读的字节约为 FP8 的一半，但精度必须守住。每一行都和用同样方式运行的 FP8 模型比较（GPTQ 那一行输出单行 JSON，见下文）：</p>
+<table>
+<thead><tr><th>哪些层用 4 bit</th><th>p50（FP8 → 4 bit）</th><th>ΔF1 [95% CI]</th></tr></thead>
+<tbody>
+<tr><td>全部线性层，NVFP4 直接舍入</td><td>873 → 749 ms</td><td>−0.026 [−0.033, −0.018]</td></tr>
+<tr><td>全部线性层，用公开数据校准的 GPTQ int4</td><td>749 → 614 ms</td><td>−0.018 [−0.024, −0.010]</td></tr>
+<tr><td><strong>只有 MLP 层用 NVFP4，其余保持 FP8</strong></td><td><strong>873 → 755 ms</strong></td><td>+0.003 [−0.003, +0.009]</td></tr>
+</tbody>
+</table>
+<p>在这个模型上，注意力层和 Gated DeltaNet 的投影层对 4 bit 很敏感，GPTQ 校准之后也一样；int4 的目标模型还把 MTP 接受率从 0.86 拉低到 0.79。MLP 占线性层权重的 70%，量化起来很干净。vLLM 的在线量化可以在加载时用 <code>quantization_config.targets</code> 做这种拆分；匹配规则只能命中线性层，否则注意力模块也会被匹配到，加载就会失败。把目标模型自己的 lm_head 量化成 FP8 没有帮助：草稿模型的 NVFP4 副本要求目标 head 是 BF16，而让草稿模型共享一个 FP8 head，每步多读的字节比省下的还多。</p>
+
+<h2>少生成 token</h2>
+<p>模型输出的是放在代码块里、带缩进的格式化 JSON：每份文档 244 个 token，同样的 JSON 写成一行只要 179 个。在 prompt 里要求输出不带代码块的单行 JSON 后，输出降到 174 个 token。MTP 接受率随之下降（缩进最容易猜），所以实际收益比 token 数少一些，但 p50 在 4 个草稿 token 时仍降低 14%，5 个时降低 18%，这里 F1 不变。我之前在另一个发票数据集上见过紧凑格式掉精度，所以每个任务都需要自己验证。</p>
+
+<h2>叠加起来</h2>
+<table>
+<thead><tr><th>配置（MTP，4 个草稿 token）</th><th>p50</th><th>p95</th><th>16 并发 份/秒</th><th>F1</th></tr></thead>
+<tbody>
+<tr><td>在线 FP8，Marlin，草稿 head 用 NVFP4</td><td>939 ms</td><td>1098 ms</td><td>3.87</td><td>0.668</td></tr>
+<tr><td>+ Humming</td><td>873 ms</td><td>1010 ms</td><td>4.60</td><td>0.667</td></tr>
+<tr><td>+ MLP NVFP4 + 单行 JSON</td><td><strong>678 ms</strong></td><td>818 ms</td><td><strong>5.27</strong></td><td>0.677</td></tr>
+</tbody>
+</table>
+<p>和第一行比，延迟降低 28%，吞吐提高 36%，全部来自配置。在 CORD 收据（100 份测试文档）上，同样的改动把 p50 从 454 ms 降到 335 ms，F1 不变（0.875 对 0.880）。还有一个仍在上游评审中的、上下文感知的稀疏草稿 lm_head（<a href="https://github.com/vllm-project/vllm/issues/67220">#67220</a>）：在 5 个草稿 token 时把 p50 降到 636 ms、p95 降到 717 ms（同一构建上不用它、4 个草稿 token 的配置是 675 和 812 ms），同样不改变 F1。我把 A100 的数据和三个 Ampere 修复贴在了那里。</p>
+
+<h2>还剩什么</h2>
+<p>即使是最好的配置，每步也只用到带宽下限的 64–70%，内核还有空间。这里的数字都来自 A100；在带宽更低的 GPU 上，同样的字节节省应该更重要，而在有原生 FP8 的 GPU 上，Marlin 和 Humming 这部分不适用。下一步是在其他架构的 GPU 上测出同样的表。</p>
+
+<h2>局限</h2>
+<p>一个模型，一张和其他任务共享的 GPU，两个公开数据集。在共享的 GPU 上，16 并发吞吐在相同配置的重复运行之间最多相差 7%；p50 的差异小于 0.5%。</p>
+
+<p>我用了 AI 编程助手（Claude）帮助写代码、跑实验和起草本文，结果由我自己核对。</p>
+</main>
+</body>
+</html>

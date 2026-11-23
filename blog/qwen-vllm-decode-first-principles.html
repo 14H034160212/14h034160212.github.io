@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Making Qwen3.5 decode faster on vLLM, starting from the bytes | Qiming Bao</title>
+<meta name="description" content="Decode reads every weight once per step. Following the bytes on an A100 led to a Marlin small-GEMM bug, a faster weight-only kernel, a quantized drafter head, MLP-only 4-bit weights and shorter JSON: 28% lower latency and 36% more throughput for Qwen3.5-9B with the same accuracy.">
+<link rel="canonical" href="https://14h034160212.github.io/blog/qwen-vllm-decode-first-principles.html">
+<link rel="alternate" hreflang="en" href="https://14h034160212.github.io/blog/qwen-vllm-decode-first-principles.html">
+<link rel="alternate" hreflang="zh-CN" href="https://14h034160212.github.io/blog/qwen-vllm-decode-first-principles-zh.html">
+<link rel="icon" type="image/jpeg" href="../qiming.jpg">
+:root { --fg:#1f2328; --muted:#59636e; --bg:#ffffff; --code:#f6f8fa; --line:#d1d9e0; --link:#0969da; }
+@media (prefers-color-scheme: dark) { :root { --fg:#e6edf3; --muted:#9198a1; --bg:#0d1117; --code:#161b22; --line:#3d444d; --link:#4493f8; } }
+body { font-family: -apple-system, "Segoe UI", Arial, sans-serif; color:var(--fg); background:var(--bg); margin:0; line-height:1.65; }
+main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: 1.9rem; line-height:1.25; margin: 0.4em 0 0.2em; }
+h2 { margin-top: 2em; border-bottom:1px solid var(--line); padding-bottom:.2em; }
+a { color: var(--link); }
+.meta { color: var(--muted); font-size: .92rem; }
+table { border-collapse: collapse; margin: 1em 0; display:block; overflow-x:auto; }
+th, td { border: 1px solid var(--line); padding: 6px 12px; }
+th { background: var(--code); }
+pre { background: var(--code); padding: 12px; overflow-x: auto; border-radius: 6px; }
+code { background: var(--code); padding: 1px 4px; border-radius: 4px; font-size: .92em; }
+pre code { padding: 0; }
+</style>
+</head>
+<body>
+</head>
+<body>
+<main>
+<p class="meta"><a href="../index.html">Qiming Bao</a> · Blog · 23 November 2026 · English / <a href="qwen-vllm-decode-first-principles-zh.html">中文</a></p>
+<h1>Making Qwen3.5 decode faster on vLLM, starting from the bytes</h1>
+<p>When a vision-language model extracts fields from a document, most of the time goes into writing the answer, one token at a time. Each decode step reads every weight of the model once, so on a GPU the step time is close to <em>weight bytes ÷ memory bandwidth</em>. I used that as the starting point and worked down from the configuration to the kernels: what is read each step, which kernels read it slowly, and how to read fewer bytes or generate fewer tokens without losing accuracy.</p>
+<p>Setup: Qwen3.5-9B with vLLM's online FP8 quantization and its built-in MTP speculative decoding, on one A100 80GB shared with other jobs. Data: the 1000 documents of the public <a href="https://huggingface.co/datasets/nanonets/nn-auto-bench-ds">nanonets/nn-auto-bench-ds</a> (invoices, receipts, bank statements, passports; MIT), image in, requested fields out as JSON, scored with field-level F1. Latency is the p50 of 50 single requests; throughput runs all 1000 documents at 16 concurrent requests. Every accuracy comparison is a paired bootstrap over documents.</p>
+
+<h2>Where the time goes</h2>
+<p>A median request took 935 ms, of which about 113 ms was prefill (including the vision encoder) and 824 ms (88%) was decode. Image preprocessing on the CPU took another 42 ms when timed on its own. Without speculative decoding, one decode step took 8.4 ms, and the GPU was busy 99% of that time, so launch overhead was not the problem. The step reads 8.95 GB of weights (6.9 GB of FP8 linear layers and a 2 GB BF16 lm_head). At the 1.75 TB/s the A100 reaches on a device copy, that is a floor of 5.1 ms. The model ran at 62% of it.</p>
+<p>An nsys trace put 6.1 ms of the 8.4 ms in FP8 GEMMs. The A100 has no FP8 tensor cores, so vLLM runs FP8 weights "weight-only" on the Marlin kernel, which converts them to BF16 on the fly. Timed shape by shape in CUDA graphs, those GEMMs averaged 1.14 TB/s, while BF16 cuBLAS reached 1.5 to 1.7 TB/s on the same shapes.</p>
+
+<h2>A Marlin bug: small layers ran slower than large ones</h2>
+<p>One shape stood out. Each of Qwen3.5's 24 Gated DeltaNet layers has an <code>in_proj_ba</code> projection from 4096 to only 64 outputs. Marlin took 37 µs for it (45 µs with int4 weights), against 6 µs in BF16 and 14 µs for a 4096 × 4096 Marlin GEMM. The smaller N got, the slower it ran.</p>
+<p>The cause was the launch. Marlin always starts one block per SM (108 on an A100). With a single output tile, each block gets about one K tile, and the blocks then add up their partial sums one after another through a lock. The length of that chain sets the run time. <a href="https://github.com/vllm-project/vllm/pull/69231">vllm#69231</a> caps the K split when a GEMM has very few output tiles and leaves larger problems on the full grid:</p>
+<table>
+<thead><tr><th>weights, K × N</th><th>before</th><th>after</th></tr></thead>
+<tbody>
+<tr><td>FP8, 4096 × 64</td><td>37.2 µs</td><td>9.3 µs</td></tr>
+<tr><td>int4 g128, 4096 × 64</td><td>45.1 µs</td><td>10.7 µs</td></tr>
+<tr><td>int4 g128, 4096 × 256</td><td>20.6 µs</td><td>11.3 µs</td></tr>
+<tr><td>larger shapes (4096 × 4096 up to 4096 × 24576)</td><td colspan="2">unchanged</td></tr>
+</tbody>
+</table>
+<p>End to end that is 3.8 to 4.7% lower p50 with the same F1. Another contributor reproduced the gain on a GB10 (48 SMs), and pointed out a shape that looked slower there. Printing Marlin's tile choice showed that shape has 4 output tiles, so the cap does not apply on 48 SMs and the difference was noise.</p>
+
+<h2>A better weight-only kernel: Humming</h2>
+<p>vLLM's maintainers plan to replace Marlin with Humming (<a href="https://github.com/vllm-project/vllm/issues/65560">#65560</a>). On the A100 it was faster on every GEMM shape of this model (all FP8 GEMMs: 6.12 → 5.19 ms per step; the 64-wide layer: 38 → 10 µs), and the whole step went from 8.41 to 7.49 ms. In a serving A/B in nine settings (input/output length × concurrency, two servers per backend), output throughput was 1.09 to 1.20 times Marlin's in eight of them (0.98 in the one-output-token case at concurrency 1, which is within the run-to-run spread) and GSM8K accuracy was unchanged (0.860 vs 0.862). Weight-only FP8 already picks Humming first for compressed-tensors checkpoints, but online <code>--quantization fp8</code> still landed on Marlin. <a href="https://github.com/vllm-project/vllm/pull/69242">vllm#69242</a> makes it pick from the weight-only table too, and fixes a flag that made the dequantization helper read a Humming-repacked weight as a raw one (a <code>[1024, 32]</code> result for a <code>[256, 512]</code> weight).</p>
+
+<h2>The drafter's lm_head</h2>
+<p>With MTP, the drafter reuses the target's 2 GB BF16 lm_head for each draft token, so at 4 draft tokens it is read four times per step. vLLM can give the drafter a quantized copy (<code>draft_lm_head_quantization</code>), and the target still verifies with its own head, so outputs do not change. The NVFP4 copy cut p50 by 15.6% at 3 draft tokens and 18.8% at 4. The FP8 copy failed to start on GPUs without FP8 GEMMs; <a href="https://github.com/vllm-project/vllm/pull/69177">vllm#69177</a> makes it weight-only there, and also fixes a missing layout flag that made Humming crash on it.</p>
+
+<h2>Fewer bytes, if accuracy allows</h2>
+<p>Four-bit weights would read about half as many bytes as FP8, but accuracy has to hold. Each row is compared with the FP8 model run the same way (the GPTQ row with single-line JSON output, see below):</p>
+<table>
+<thead><tr><th>what is 4-bit</th><th>p50 (FP8 → 4-bit)</th><th>ΔF1 [95% CI]</th></tr></thead>
+<tbody>
+<tr><td>every linear layer, NVFP4 round-to-nearest</td><td>873 → 749 ms</td><td>−0.026 [−0.033, −0.018]</td></tr>
+<tr><td>every linear layer, GPTQ int4 calibrated on public data</td><td>749 → 614 ms</td><td>−0.018 [−0.024, −0.010]</td></tr>
+<tr><td><strong>only the MLP layers, NVFP4; the rest stays FP8</strong></td><td><strong>873 → 755 ms</strong></td><td>+0.003 [−0.003, +0.009]</td></tr>
+</tbody>
+</table>
+<p>On this model the attention and Gated DeltaNet projections are sensitive to 4 bits, even after GPTQ calibration; the int4 target also lowered MTP acceptance from 0.86 to 0.79. The MLPs hold 70% of the linear weights and quantize cleanly. vLLM's online quantization can do this split at load time with <code>quantization_config.targets</code>; the patterns must match only linear layers, or the attention modules match too and loading fails. Quantizing the target's own lm_head to FP8 did not help: the NVFP4 drafter copy needs a BF16 target head, and sharing an FP8 head with the drafter read more bytes per step than it saved.</p>
+
+<h2>Fewer tokens</h2>
+<p>The model wrote pretty-printed JSON inside a code fence: 244 tokens per document, against 179 for the same JSON on one line. Asking for single-line JSON without fences cut output to 174 tokens. MTP acceptance fell (indentation is easy to predict), so the net gain was smaller than the token count suggests, but p50 still dropped 14% at 4 draft tokens and 18% at 5, with F1 unchanged here. On another invoice dataset I had earlier seen a compact format cost accuracy, so this needs checking on each workload.</p>
+
+<h2>Together</h2>
+<table>
+<thead><tr><th>configuration (MTP, 4 draft tokens)</th><th>p50</th><th>p95</th><th>docs/s at 16 concurrent</th><th>F1</th></tr></thead>
+<tbody>
+<tr><td>online FP8, Marlin, NVFP4 drafter head</td><td>939 ms</td><td>1098 ms</td><td>3.87</td><td>0.668</td></tr>
+<tr><td>+ Humming</td><td>873 ms</td><td>1010 ms</td><td>4.60</td><td>0.667</td></tr>
+<tr><td>+ MLP NVFP4 + single-line JSON</td><td><strong>678 ms</strong></td><td>818 ms</td><td><strong>5.27</strong></td><td>0.677</td></tr>
+</tbody>
+</table>
+<p>That is 28% lower latency and 36% more throughput than the first row, all from configuration. On CORD receipts (100 test documents) the same change took p50 from 454 to 335 ms with F1 unchanged (0.875 vs 0.880). A context-aware sparse lm_head for the drafter, which is still under review upstream (<a href="https://github.com/vllm-project/vllm/issues/67220">#67220</a>), took p50 to 636 ms and p95 to 717 ms at 5 draft tokens (against 675 and 812 ms for the 4-draft-token configuration without it on the same build), also without changing F1; I posted the A100 numbers and three Ampere fixes there.</p>
+
+<h2>What is left</h2>
+<p>Even the best configuration reaches only 64 to 70% of the bandwidth floor per step, so the kernels still have room. The numbers here are from an A100; on GPUs with less bandwidth the same byte savings should matter more, and on GPUs with native FP8 the Marlin and Humming parts do not apply. Measuring the same table on other GPU architectures is the next step.</p>
+
+<h2>Caveats</h2>
+<p>One model, one GPU shared with other jobs, two public datasets. Throughput at 16 concurrent requests varied by up to 7% between identical runs on the shared GPU; p50 varied by less than 0.5%.</p>
+
+<p>I used an AI coding assistant (Claude) to help write the code, run the experiments and draft this post, and I checked the results myself.</p>
+</main>
+</body>
+</html>
