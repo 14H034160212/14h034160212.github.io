@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>标注还是生成？在同一批文档上把两者都微调 | Qiming Bao</title>
+<meta name="description" content="在同样的 801 份文档上微调后，Qwen3.5-9B 生成最准（F1 0.882），2B 词级标注模型快约九倍（0.857）。1 百万像素上限让标注吞吐提高 4–5 倍；只把没把握的文档交给生成模型，平均延迟减半。">
+<link rel="canonical" href="https://14h034160212.github.io/blog/qwen-tag-or-generate-fair-comparison-zh.html">
+<link rel="alternate" hreflang="en" href="https://14h034160212.github.io/blog/qwen-tag-or-generate-fair-comparison.html">
+<link rel="alternate" hreflang="zh-CN" href="https://14h034160212.github.io/blog/qwen-tag-or-generate-fair-comparison-zh.html">
+<link rel="icon" type="image/jpeg" href="../qiming.jpg">
+<style>
+:root { --fg:#1f2328; --muted:#59636e; --bg:#ffffff; --code:#f6f8fa; --line:#d1d9e0; --link:#0969da; }
+@media (prefers-color-scheme: dark) { :root { --fg:#e6edf3; --muted:#9198a1; --bg:#0d1117; --code:#161b22; --line:#3d444d; --link:#4493f8; } }
+body { font-family: -apple-system, "Segoe UI", Arial, sans-serif; color:var(--fg); background:var(--bg); margin:0; line-height:1.65; }
+main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: 1.9rem; line-height:1.25; margin: 0.4em 0 0.2em; }
+h2 { margin-top: 2em; border-bottom:1px solid var(--line); padding-bottom:.2em; }
+a { color: var(--link); }
+.meta { color: var(--muted); font-size: .92rem; }
+table { border-collapse: collapse; margin: 1em 0; display:block; overflow-x:auto; }
+th, td { border: 1px solid var(--line); padding: 6px 12px; }
+th { background: var(--code); }
+pre { background: var(--code); padding: 12px; overflow-x: auto; border-radius: 6px; }
+code { background: var(--code); padding: 1px 4px; border-radius: 4px; font-size: .92em; }
+pre code { padding: 0; }
+</style>
+</head>
+<body>
+<main>
+<p class="meta"><a href="../index.html">Qiming Bao</a> · 博客 · 2026 年 11 月 24 日 · <a href="qwen-tag-or-generate-fair-comparison.html">English</a> / 中文</p>
+<h1>标注还是生成？在同一批文档上把两者都微调</h1>
+<p>在<a href="qwen-document-extraction-vllm-zh.html">之前一篇文章</a>里，微调过的 Qwen3.5 词级标注模型远远好于零样本的 JSON 生成。但那个比较混了两件事：标注对生成，以及训练过对没训练过。这次两者都在同样的 801 份文档上微调，在同样的 199 份文档上测试。结果是标注模型不再是最准的，但仍然快了约十倍；只把它最没把握的文档交给生成模型，可以兼得大部分好处。</p>
+<p>数据是公开的 <a href="https://huggingface.co/datasets/nanonets/nn-auto-bench-ds">nanonets/nn-auto-bench-ds</a>（发票、收据、银行流水、护照；MIT 许可），共 1000 份，按文档类型用固定随机种子分成 801 份训练、199 份测试。评分是被询问字段的字段级 F1。标注模型的标签来自把每个标准答案在数据集自带的 OCR 词里做归一化字符串匹配（95.5% 的值能找到，其余不标），得到 54 种字段名的词级 BIO 标签。所有实验都在一张和其他任务共享的 A100 上；精度差异都是按文档做的配对 bootstrap。</p>
+
+<h2>两个模型</h2>
+<ul>
+<li><strong>生成：</strong>Qwen3.5-9B，QLoRA（r = 16，600 步，35 分钟），训练它对推理时同样的 prompt 输出单行 JSON。部署时把 adapter 合并进原始 BF16 权重文件，保留 MTP 草稿模型的权重，再用<a href="qwen-vllm-decode-first-principles-zh.html">解码那篇文章</a>里最快且不掉精度的配置运行（MLP 权重 NVFP4、其余 FP8，在 Humming 内核上 weight-only；MTP 4 个草稿 token，草稿 head 用 NVFP4）。</li>
+<li><strong>标注：</strong>Qwen3.5-0.8B 或 2B，加 LoRA，在每个 OCR 词的第一个子词上接一个线性分类头（2000 步；0.8B 用 43 分钟，2B 用 54 分钟），用 vLLM 的 pooling runner 一次前向完成。</li>
+</ul>
+
+<h2>结果</h2>
+<table>
+<thead><tr><th>方法</th><th>p50</th><th>p95</th><th>批量 份/秒</th><th>F1（199 份测试文档）</th></tr></thead>
+<tbody>
+<tr><td>生成，9B 零样本</td><td>668 ms</td><td>818 ms</td><td>6.0</td><td>0.680</td></tr>
+<tr><td><strong>生成，9B 微调</strong></td><td>663 ms</td><td>748 ms</td><td>6.5</td><td><strong>0.882</strong></td></tr>
+<tr><td>标注，2B 微调</td><td>72 ms</td><td>88 ms</td><td>16.9</td><td>0.857</td></tr>
+<tr><td>标注，0.8B 微调</td><td>68 ms</td><td>95 ms</td><td>18.3</td><td>0.841</td></tr>
+</tbody>
+</table>
+<p>以上是 vLLM 离线运行的结果；延迟是单个请求的 p50 和 p95，吞吐是全部文档一起跑（生成时同时 16 个请求）。标注模型用了下文的 1 百万像素上限。</p>
+<p>微调让生成模型的 F1 提高了 20 个点，速度没有变慢。MTP 草稿模型没有跟着重新训练，但接受率只从 0.86 降到 0.84，而且微调后的模型输出更短（157 个 token，原来 193 个）。微调过的 2B 标注模型比它低 2.6 个点（95% CI −4.5 到 −0.8），单请求延迟约为它的九分之一。2B 标注模型比 0.8B 高 1.5 个点（CI +0.2 到 +3.0），只慢几毫秒。</p>
+
+<h2>一张 1950 万像素的页面</h2>
+<p>一开始 2B 标注模型批量处理每秒只有 3 到 4.5 份，比一份一份地发还慢。原因不是图像预处理（单个 CPU 线程每张 32 ms，开并行 renderer worker 也没用），也不是 vLLM 的多进程引擎。引擎大部分时间都在等 GPU。前 80 份测试文档每秒能跑 38 份，其余平均每份 150 ms。数据集里有几张图非常大：一张 1950 万像素（64,896 个视觉 patch，16,224 个图像 token），有一类文档平均 530 万像素，而这些页面只有大约 150 个词。视觉注意力的开销随 patch 数平方增长，所以这几页拖慢了整个批次。</p>
+<p>推理时把图像限制在 1 百万像素（<code>mm_processor_kwargs={"max_pixels": 1048576}</code>），模型不变（仍是全分辨率训练的那个）：</p>
+<table>
+<thead><tr><th>标注模型</th><th>份/秒 之前 → 之后</th><th>ΔF1 [95% CI]</th></tr></thead>
+<tbody>
+<tr><td>0.8B</td><td>8–10 → 18.3</td><td>−0.001 [−0.006, +0.003]</td></tr>
+<tr><td>2B</td><td>3–4.5 → 16.9</td><td>−0.001 [−0.006, +0.004]</td></tr>
+</tbody>
+</table>
+<p>生成那边本来就把图片长边缩到最多 1280 像素，所以一直没遇到这个问题。把 <code>max_num_batched_tokens</code> 从 8192 提到 32768 也让不限像素的 2B 快了 40%，但真正解决问题的是像素上限。</p>
+
+<h2>只把没把握的文档交给生成模型</h2>
+<p>标注模型的概率能说明它什么时候没把握。我把一份文档的置信度定义为：它预测出的字段的词、以及没被标注的词里，最高类别概率的最小值。低于阈值的文档再交给生成模型，用生成模型的答案。阈值用测试文档上的 2 折交叉验证选（20 次随机划分，最常选中 0.7），所以精度估计不是在被评分的文档上调出来的。这样大约 35% 的文档会被转走。</p>
+<p>然后把它当成服务真正跑起来：微调过的 9B 在一张 GPU 上用 <code>vllm serve</code> 提供服务，2B 标注模型和路由在另一张 GPU 上；两边都关掉了前缀缓存和多模态缓存，保证没有请求能从缓存里拿结果：</p>
+<table>
+<thead><tr><th>方法</th><th>逐份处理：p50</th><th>p95</th><th>平均</th><th>批量 份/秒</th><th>F1</th></tr></thead>
+<tbody>
+<tr><td>只用生成（9B 微调）</td><td>590 ms</td><td>735 ms</td><td>607 ms</td><td>6.6</td><td>0.882</td></tr>
+<tr><td>只用标注（2B，1 百万像素）</td><td>72 ms</td><td>90 ms</td><td>78 ms</td><td>21.1</td><td>0.857</td></tr>
+<tr><td><strong>先标注，35% 再生成</strong></td><td><strong>72 ms</strong></td><td>767 ms</td><td><strong>291 ms</strong></td><td>10.0</td><td>0.870</td></tr>
+</tbody>
+</table>
+<p>路由把平均延迟降了一半，三分之二的请求和标注模型一样快。代价是比全部生成低 1.2 个点，在交叉验证的估计里属于噪声范围（−1.1 个点，不显著）。这个演示里批量的两个阶段是先后跑的；如果两张 GPU 同时工作，生成模型只需要承担 35% 的流量。另一种做法是保留标注模型有把握的字段、只从生成模型拿其余字段，它比全部生成还<em>高</em> 1 个点，但要转走约 80% 的文档，所以它换来的是精度而不是速度。</p>
+
+<h2>一个测量陷阱</h2>
+<p>我最初测的标注模型延迟低了 20 到 25 ms。脚本在吞吐测试之后，用刚处理过的文档测单请求延迟，vLLM 的前缀缓存省掉了大部分前向计算。199 个标注请求能全部放进缓存；1000 份文档的生成测试放不下，所以在没见过的文档上重测时，之前发布的数字基本不变（933、859、670 ms，对比发布的 939、873、678 ms）。测单请求延迟要用引擎没见过的文档，或者关掉缓存。</p>
+
+<h2>该用哪个</h2>
+<ul>
+<li>要最高精度：微调生成模型。在这个数据上它最准，速度和零样本一样。</li>
+<li>要最低延迟或成本：用标注模型，并限制像素。它需要词级标签，只能覆盖在 OCR 文本里原样出现的值和训练时见过的字段名。</li>
+<li>两者都要：先标注，没把握的再生成。</li>
+</ul>
+
+<h2>局限</h2>
+<p>一个公开数据集、199 份测试文档，标签由字符串匹配得到，一张和其他任务共享的 GPU（p95 是这里噪声最大的数字）。生成模型的延迟是在数据集前面的文档上测的，其中有些是训练文档；这会影响那些文档上的精度而不是速度，精度只在测试文档上报告。</p>
+
+<p>我用了 AI 编程助手（Claude）帮助写代码、跑实验和起草本文，结果由我自己核对。</p>
+</main>
+</body>
+</html>

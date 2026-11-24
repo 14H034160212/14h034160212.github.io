@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tag or generate? Fine-tuning both on the same documents | Qiming Bao</title>
+<meta name="description" content="Fine-tuned on the same 801 documents, Qwen3.5-9B generation is the most accurate (F1 0.882) and a 2B token tagger is about nine times faster (0.857). A 1-megapixel image cap gave the tagger 4 to 5 times the throughput, and routing only doubtful documents to the generator halved mean latency.">
+<link rel="canonical" href="https://14h034160212.github.io/blog/qwen-tag-or-generate-fair-comparison.html">
+<link rel="alternate" hreflang="en" href="https://14h034160212.github.io/blog/qwen-tag-or-generate-fair-comparison.html">
+<link rel="alternate" hreflang="zh-CN" href="https://14h034160212.github.io/blog/qwen-tag-or-generate-fair-comparison-zh.html">
+<link rel="icon" type="image/jpeg" href="../qiming.jpg">
+<style>
+:root { --fg:#1f2328; --muted:#59636e; --bg:#ffffff; --code:#f6f8fa; --line:#d1d9e0; --link:#0969da; }
+@media (prefers-color-scheme: dark) { :root { --fg:#e6edf3; --muted:#9198a1; --bg:#0d1117; --code:#161b22; --line:#3d444d; --link:#4493f8; } }
+body { font-family: -apple-system, "Segoe UI", Arial, sans-serif; color:var(--fg); background:var(--bg); margin:0; line-height:1.65; }
+main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: 1.9rem; line-height:1.25; margin: 0.4em 0 0.2em; }
+h2 { margin-top: 2em; border-bottom:1px solid var(--line); padding-bottom:.2em; }
+a { color: var(--link); }
+.meta { color: var(--muted); font-size: .92rem; }
+table { border-collapse: collapse; margin: 1em 0; display:block; overflow-x:auto; }
+th, td { border: 1px solid var(--line); padding: 6px 12px; }
+th { background: var(--code); }
+pre { background: var(--code); padding: 12px; overflow-x: auto; border-radius: 6px; }
+code { background: var(--code); padding: 1px 4px; border-radius: 4px; font-size: .92em; }
+pre code { padding: 0; }
+</style>
+</head>
+<body>
+<main>
+<p class="meta"><a href="../index.html">Qiming Bao</a> · Blog · 24 November 2026 · English / <a href="qwen-tag-or-generate-fair-comparison-zh.html">中文</a></p>
+<h1>Tag or generate? Fine-tuning both on the same documents</h1>
+<p>In an <a href="qwen-document-extraction-vllm.html">earlier post</a> a fine-tuned Qwen3.5 token tagger beat zero-shot JSON generation by a wide margin. That comparison mixed two things: tagging versus generating, and trained versus untrained. Here both are fine-tuned on the same 801 documents and tested on the same 199. The tagger is no longer the most accurate, but it is still about ten times faster, and sending only its least confident documents to the generator keeps most of both.</p>
+<p>Data: the public <a href="https://huggingface.co/datasets/nanonets/nn-auto-bench-ds">nanonets/nn-auto-bench-ds</a> (invoices, receipts, bank statements, passports; MIT), 1000 documents, split 801 train / 199 test by document type with a fixed seed. Scoring is field-level F1 on the queried fields. For the tagger, each gold value was located in the dataset's OCR words by normalised string matching (95.5% of values were found; the rest stay untagged), giving word-level BIO tags over 54 field names. All runs are on one A100 shared with other jobs; accuracy differences are paired bootstraps over documents.</p>
+
+<h2>The two models</h2>
+<ul>
+<li><strong>Generate:</strong> Qwen3.5-9B, QLoRA (r = 16, 600 steps, 35 minutes), trained to answer the same prompt it gets at inference with single-line JSON. For serving, the adapter is merged into the original BF16 shards with the MTP drafter weights kept, then run with the fastest accuracy-neutral configuration from the <a href="qwen-vllm-decode-first-principles.html">decode post</a> (MLP weights in NVFP4 and the rest in FP8, weight-only on the Humming kernel; MTP with 4 draft tokens and an NVFP4 drafter head).</li>
+<li><strong>Tag:</strong> Qwen3.5-0.8B or 2B with LoRA and a linear head on the first sub-token of each OCR word (2,000 steps; 43 minutes for 0.8B, 54 for 2B), served with vLLM's pooling runner in one forward pass.</li>
+</ul>
+
+<h2>Results</h2>
+<table>
+<thead><tr><th>method</th><th>p50</th><th>p95</th><th>docs/s, batched</th><th>F1 (199 test docs)</th></tr></thead>
+<tbody>
+<tr><td>generate, 9B zero-shot</td><td>668 ms</td><td>818 ms</td><td>6.0</td><td>0.680</td></tr>
+<tr><td><strong>generate, 9B fine-tuned</strong></td><td>663 ms</td><td>748 ms</td><td>6.5</td><td><strong>0.882</strong></td></tr>
+<tr><td>tag, 2B fine-tuned</td><td>72 ms</td><td>88 ms</td><td>16.9</td><td>0.857</td></tr>
+<tr><td>tag, 0.8B fine-tuned</td><td>68 ms</td><td>95 ms</td><td>18.3</td><td>0.841</td></tr>
+</tbody>
+</table>
+<p>Offline vLLM runs; latency is the p50 and p95 of single requests, throughput is all documents at once with 16 in flight for generation. The taggers use the 1-megapixel image cap described below.</p>
+<p>Fine-tuning the generator added 20 points of F1 and did not slow it down. The MTP drafter is not retrained with the target, but acceptance only fell from 0.86 to 0.84, and the fine-tuned model writes shorter answers (157 tokens instead of 193). The fine-tuned 2B tagger is 2.6 points behind it (95% CI −4.5 to −0.8), at about a ninth of the single-request latency. The 2B tagger is 1.5 points better than the 0.8B one (CI +0.2 to +3.0) and costs a few milliseconds more.</p>
+
+<h2>A 19.5-megapixel page</h2>
+<p>Batched, the 2B tagger first managed only 3 to 4.5 documents per second, slower than sending the documents one at a time. Image preprocessing was not the cause (32 ms per image on one CPU thread, and parallel renderer workers did not help), and neither was vLLM's multiprocess engine. The engine was mostly waiting on the GPU. The first 80 test documents ran at 38 documents per second; the rest averaged 150 ms each. A few images in the dataset are very large: one is 19.5 megapixels (64,896 vision patches, 16,224 image tokens), and one document type averages 5.3 megapixels, for pages that hold about 150 words. Vision attention cost grows with the square of the patch count, so these pages dominated the batch.</p>
+<p>Capping images at 1 megapixel at inference time (<code>mm_processor_kwargs={"max_pixels": 1048576}</code>), on the same full-resolution-trained model:</p>
+<table>
+<thead><tr><th>tagger</th><th>docs/s before → after</th><th>ΔF1 [95% CI]</th></tr></thead>
+<tbody>
+<tr><td>0.8B</td><td>8–10 → 18.3</td><td>−0.001 [−0.006, +0.003]</td></tr>
+<tr><td>2B</td><td>3–4.5 → 16.9</td><td>−0.001 [−0.006, +0.004]</td></tr>
+</tbody>
+</table>
+<p>The generative setup already resized pages to at most 1280 pixels on the long side, which is why it never showed this. Raising <code>max_num_batched_tokens</code> from 8192 to 32768 also helped the uncapped 2B (+40%), but the cap is what fixed it.</p>
+
+<h2>Route only the doubtful documents</h2>
+<p>The tagger's probabilities say when it is unsure. I took a document's confidence as the lowest top-label probability over the words of its predicted fields and over its untagged words. Documents below a threshold are also sent to the generator, whose answer is used for them. I chose the threshold by 2-fold cross-validation over the test documents (20 random splits; 0.7 was picked most often), so the accuracy estimate is not tuned on the documents it is scored on. That routes about 35% of documents.</p>
+<p>Then I ran it as a service: the fine-tuned 9B behind <code>vllm serve</code> on one GPU, and the 2B tagger with the router on another, with prefix and multimodal caches off on both so that no request could be served from a cache:</p>
+<table>
+<thead><tr><th>method</th><th>one at a time: p50</th><th>p95</th><th>mean</th><th>batched docs/s</th><th>F1</th></tr></thead>
+<tbody>
+<tr><td>generate only (9B fine-tuned)</td><td>590 ms</td><td>735 ms</td><td>607 ms</td><td>6.6</td><td>0.882</td></tr>
+<tr><td>tag only (2B, 1 MP)</td><td>72 ms</td><td>90 ms</td><td>78 ms</td><td>21.1</td><td>0.857</td></tr>
+<tr><td><strong>tag, then generate 35%</strong></td><td><strong>72 ms</strong></td><td>767 ms</td><td><strong>291 ms</strong></td><td>10.0</td><td>0.870</td></tr>
+</tbody>
+</table>
+<p>Routing halves the mean latency and makes two thirds of requests as fast as the tagger. The cost is 1.2 points against generating everything, which is within noise in the cross-validated estimate (−1.1 points, not significant). The batched number runs the two stages one after the other in this demo; with both GPUs working at once, the generator only has to keep up with 35% of the traffic. Keeping the tagger's confident fields and taking only the rest from the generator was 1 point <em>better</em> than generating everything, but it routes about 80% of documents, so it buys accuracy rather than speed.</p>
+
+<h2>A measurement trap</h2>
+<p>My first latency numbers for the tagger were 20 to 25 ms too low. The script timed single requests on documents it had just processed in the throughput run, and vLLM's prefix cache served most of the forward pass. The 199 tagger prompts fit in the cache; the 1000-document generation runs did not, so their earlier numbers held up when I re-measured them on unseen documents (933, 859 and 670 ms against the published 939, 873 and 678 ms). Time single requests on documents the engine has not seen, or switch the caches off.</p>
+
+<h2>When to use which</h2>
+<ul>
+<li>Highest accuracy: fine-tune the generator. On this data it is the most accurate, at the same speed as zero-shot.</li>
+<li>Lowest latency or cost: the tagger, with a pixel cap. It needs word-level labels and covers only values that appear verbatim in the OCR text and field names seen in training.</li>
+<li>Both: tag first, generate for the doubtful documents.</li>
+</ul>
+
+<h2>Caveats</h2>
+<p>One public dataset with 199 test documents, labels made by string matching, one GPU shared with other jobs (p95 is the noisiest number here). The generator's latency is measured on the first documents of the dataset, some of which are training documents; that affects its accuracy there, not its speed, and accuracy is only reported on the test documents.</p>
+
+<p>I used an AI coding assistant (Claude) to help write the code, run the experiments and draft this post, and I checked the results myself.</p>
+</main>
+</body>
+</html>
